@@ -131,3 +131,28 @@ export function formatDate(dateStr) {
 export function formatTime() {
   return new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 }
+
+/**
+ * Count consecutive days (counting back from today) where calories > 0.
+ * Today counts if it has any logged calories; otherwise the streak starts
+ * from yesterday (so a fresh day doesn't break yesterday's streak).
+ */
+export function computeStreak(dailyLogs) {
+  if (!dailyLogs) return 0;
+  let streak = 0;
+  const today = new Date();
+  // If today has no data yet, start checking from yesterday
+  const todayKey = getDateKey(today);
+  const todayLog = dailyLogs[todayKey];
+  const startOffset = todayLog && todayLog.calories > 0 ? 0 : -1;
+  const d = new Date(today);
+  d.setDate(d.getDate() + startOffset);
+  while (true) {
+    const key = getDateKey(d);
+    const log = dailyLogs[key];
+    if (!log || !log.calories || log.calories === 0) break;
+    streak++;
+    d.setDate(d.getDate() - 1);
+  }
+  return streak;
+}

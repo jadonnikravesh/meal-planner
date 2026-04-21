@@ -1,12 +1,49 @@
 require('dotenv').config();
 
-const express  = require('express');
-const cors     = require('cors');
-const https    = require('https');
+const express   = require('express');
+const cors      = require('cors');
+const https     = require('https');
+const fs        = require('fs');
+const path      = require('path');
 const Anthropic = require('@anthropic-ai/sdk');
 
 const app  = express();
 const port = process.env.PORT || 3001;
+
+// ─── Promo code store (file-backed) ──────────────────────────────────────────
+const PROMO_FILE = path.join(__dirname, 'promo_redemptions.json');
+
+// Master list of valid codes. Set revoked: true to disable a code without
+// deleting its redemption history.
+let promoData = {
+  codes: {
+    Squidward22: { revoked: false, plan: 'lifetime_free', redemptions: [] },
+  },
+};
+
+try {
+  const raw    = fs.readFileSync(PROMO_FILE, 'utf8');
+  const loaded = JSON.parse(raw);
+  // Deep-merge so new codes in the source list aren't lost on restart,
+  // but saved revoked state and redemptions from disk take precedence.
+  if (loaded.codes) {
+    for (const [code, saved] of Object.entries(loaded.codes)) {
+      if (promoData.codes[code]) {
+        promoData.codes[code] = { ...promoData.codes[code], ...saved };
+      }
+    }
+  }
+} catch (_) {
+  // File doesn't exist yet — created on first redemption.
+}
+
+function savePromoData() {
+  try {
+    fs.writeFileSync(PROMO_FILE, JSON.stringify(promoData, null, 2), 'utf8');
+  } catch (err) {
+    console.error('[promo] failed to persist redemptions:', err.message);
+  }
+}
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(cors());
@@ -21,8 +58,9 @@ const anthropic = new Anthropic({
 let mealLog = [];
 
 // ─── System prompt builder ────────────────────────────────────────────────────
-// Built per-request so it includes the user's current goals and logged totals.
-function buildSystemPrompt(userProfile) {
+// Built per-request so it includes the user's current goals, logged totals,
+// and their personal food history for personalised suggestions.
+function buildSystemPrompt(userProfile, foodPreferences = []) {
   const p = userProfile || {};
 
   const goalLine = p.goal === 'lose'     ? 'lose body fat'
@@ -40,7 +78,7 @@ function buildSystemPrompt(userProfile) {
   const profileSection = p.calorieTarget ? `
 User profile:
 - Goal: ${goalLine}
-- Daily targets: ${p.calorieTarget} kcal | Protein ${p.proteinTarget}g | Carbs ${p.carbTarget}g | Fat ${p.fatTarget}g | Water ${p.waterTarget || 2700}ml
+- Daily targets: ${p.calorieTarget} kcal | Protein ${p.proteinTarget}g | Carbs ${p.carbTarget}g | Fat ${p.fatTarget}g
 - Activity level: ${p.activityLevel || 'moderate'}
 - Already logged today: ${p.loggedCalories || 0} kcal | Protein ${p.loggedProtein || 0}g | Carbs ${p.loggedCarbs || 0}g | Fat ${p.loggedFat || 0}g
 - Remaining today: ${(p.calorieTarget || 2000) - (p.loggedCalories || 0)} kcal | Protein ${(p.proteinTarget || 150) - (p.loggedProtein || 0)}g remaining
@@ -48,12 +86,19 @@ ${dietLine}
 ${allergyLine}
 ` : '';
 
+  const prefSection = foodPreferences.length ? `
+Foods this user eats regularly (ranked by recency-weighted frequency — higher rank = more familiar):
+${foodPreferences.map((f, i) => `${i + 1}. ${f.name} (logged ${f.count}x)`).join('\n')}
+
+When suggesting meals or foods: prioritise these items and close variations first. Don't force them into every response, but give them clear preference when relevant. The goal is for recommendations to feel like something this specific person would actually eat, not generic advice.
+` : '';
+
   // Valid imageKey values (must be one of these — used to fetch a food photo):
   const imageKeys = 'chicken, turkey, beef, steak, pork, salmon, tuna, shrimp, egg, rice, pasta, bread, oats, oatmeal, potato, sweetpotato, banana, apple, salad, broccoli, spinach, avocado, yogurt, cheese, milk, nuts, almonds, soup, pizza, burger, sandwich, sushi, tacos, coffee, smoothie, protein_shake, default';
 
-  return `You are FitChat AI — a personal trainer and nutrition coach inside a mobile app. You talk exactly like a real trainer texting a client: short, direct, warm, specific. Never like a report or a document.
+  return `You are FoodChat AI — a personal trainer and nutrition coach inside a mobile app. You talk exactly like a real trainer texting a client: short, direct, warm, specific. Never like a report or a document.
 
-${profileSection}
+${profileSection}${prefSection}
 CRITICAL FORMAT RULES — violating these breaks the app UI:
 You are FORBIDDEN from using any markdown whatsoever. That means:
   NO # or ## headings
@@ -80,27 +125,23 @@ LENGTH:
 
 BEHAVIOUR:
 
-MEAL LOGGING — strict rules, no exceptions:
+LOGGING RULES — read every rule before deciding what to output:
 
-You MUST output a <meal_log> block ONLY when the user explicitly states they have eaten or are currently eating something.
-Trigger phrases (user must use one of these or equivalent): "I had", "I ate", "I just ate", "I just had", "I'm eating", "I'm having", "I drank", "I just drank", "log this", "add this", "track this", "I finished", "I just finished".
+─── MEAL LOGGING ───
+You MUST output a <meal_log> block when the user states they already ate food OR drank a caloric beverage.
+Caloric beverages (MUST use <meal_log>): juice, soda, beer, wine, spirits, coffee with milk/sugar, latte, cappuccino, smoothie, protein shake, sports drink, energy drink, milk, oat milk — anything with calories.
+Trigger phrases: "I had", "I ate", "I just ate", "I just had", "I'm eating", "I'm having", "I drank [caloric drink]", "log this", "add this", "track this", "I finished".
 
-NEVER log a meal for:
-- Meal suggestions or plans ("give me a meal plan", "what should I eat", "suggest something")
-- Nutrition questions ("how many calories in X", "is X healthy")
-- Hypothetical or future food ("I'm going to have", "I'm thinking of eating", "what if I had")
-- Analysis requests ("how am I doing", "analyze my diet")
-- Repeated mentions of something already logged earlier in this same conversation
+NEVER output <meal_log> for:
+- Plain water (use <water_log> instead)
+- Meal suggestions ("what should I eat", "give me a plan")
+- Nutrition questions ("how many calories in X")
+- Hypothetical food ("I'm going to have", "what if I had")
+- Analysis requests ("how am I doing")
 
-When a meal IS logged: output the <meal_log> block first (it is hidden from the user by the app), then reply in 2-3 sentences confirming it like a trainer and giving one practical tip about what they still need today.
+When a meal IS logged: output the <meal_log> block first, then reply in 2-3 sentences confirming it like a trainer with one practical tip.
 
-When the user asks for meal suggestions or a plan: write one flowing paragraph. Be specific with food names and amounts. Tie suggestions to their goal (${goalLine}) and what they still need. Sound like you know them.
-
-${(p.dietaryRestrictions?.trim() || p.allergies?.trim()) ? `DIETARY RULES (non-negotiable — always enforce these regardless of what the user asks):
-${p.dietaryRestrictions?.trim() ? `- The user follows these dietary restrictions: ${p.dietaryRestrictions}. Every suggestion must respect this.` : ''}
-${p.allergies?.trim() ? `- The user is allergic to: ${p.allergies}. NEVER suggest anything containing these ingredients. This is a safety requirement — treat it like a hard rule with no exceptions.` : ''}
-
-` : ''}MEAL LOG FORMAT:
+MEAL LOG FORMAT:
 <meal_log>
 {
   "logged": true,
@@ -112,7 +153,15 @@ ${p.allergies?.trim() ? `- The user is allergic to: ${p.allergies}. NEVER sugges
   "imageKey": "egg"
 }
 </meal_log>
-imageKey must be one of: ${imageKeys} — pick the one that best matches the primary food. Macros must be accurate for typical serving sizes.`;
+imageKey must be one of: ${imageKeys} — pick the one that best matches the primary food. Macros must be accurate for typical serving sizes.
+
+When the user asks for meal suggestions or a plan: write one flowing paragraph. Be specific with food names and amounts. Tie suggestions to their goal (${goalLine}) and what they still need. Sound like you know them.
+
+${(p.dietaryRestrictions?.trim() || p.allergies?.trim()) ? `DIETARY RULES (non-negotiable — always enforce these regardless of what the user asks):
+${p.dietaryRestrictions?.trim() ? `- The user follows these dietary restrictions: ${p.dietaryRestrictions}. Every suggestion must respect this.` : ''}
+${p.allergies?.trim() ? `- The user is allergic to: ${p.allergies}. NEVER suggest anything containing these ingredients. This is a safety requirement — treat it like a hard rule with no exceptions.` : ''}
+
+` : ''}`;
 }
 
 // ─── Helper: strip markdown formatting from AI text ──────────────────────────
@@ -170,7 +219,7 @@ app.get('/test', async (_req, res) => {
 
 // ─── POST /chat ───────────────────────────────────────────────────────────────
 app.post('/chat', async (req, res) => {
-  const { message, history = [], userProfile } = req.body;
+  const { message, history = [], userProfile, foodPreferences = [] } = req.body;
 
   if (!message || typeof message !== 'string' || !message.trim()) {
     return res.status(400).json({ error: 'message is required' });
@@ -185,18 +234,22 @@ app.post('/chat', async (req, res) => {
     const response = await anthropic.messages.create({
       model:      'claude-opus-4-6',
       max_tokens: 1024,
-      system:     buildSystemPrompt(userProfile),
+      system:     buildSystemPrompt(userProfile, foodPreferences),
       messages,
     });
 
     const aiText = response.content[0]?.text ?? '';
-    const displayText = stripMarkdown(aiText.replace(/<meal_log>[\s\S]*?<\/meal_log>/, '').trim());
+    const displayText = stripMarkdown(
+      aiText
+        .replace(/<meal_log>[\s\S]*?<\/meal_log>/, '')
+        .trim()
+    );
 
     // parseMealLog returns null when no <meal_log> block exists.
     // meal.logged must be explicitly true — prevents phantom logs from
     // malformed or informational <meal_log> blocks the AI sometimes emits.
-    const meal       = parseMealLog(aiText);
-    const shouldLog  = !!(meal && meal.logged === true && meal.name && meal.calories > 0);
+    const meal      = parseMealLog(aiText);
+    const shouldLog = !!(meal && meal.logged === true && meal.name && meal.calories > 0);
 
     if (shouldLog) {
       const entry = {
@@ -217,7 +270,7 @@ app.post('/chat', async (req, res) => {
 
     res.json({
       reply:      displayText,
-      mealLogged: shouldLog,   // FIX: was !!meal which is true even for logged:false blocks
+      mealLogged: shouldLog,
       meal:       shouldLog ? meal : null,
     });
 
@@ -240,7 +293,7 @@ app.post('/chat', async (req, res) => {
 // Accepts a base64-encoded food photo, runs it through Claude vision, and
 // returns the same shape as /chat so the frontend can handle both identically.
 app.post('/analyze-photo', async (req, res) => {
-  const { imageBase64, mimeType = 'image/jpeg', userProfile } = req.body;
+  const { imageBase64, mimeType = 'image/jpeg', userProfile, foodPreferences = [] } = req.body;
 
   if (!imageBase64) {
     return res.status(400).json({ error: 'imageBase64 is required' });
@@ -250,7 +303,7 @@ app.post('/analyze-photo', async (req, res) => {
     const response = await anthropic.messages.create({
       model:      'claude-opus-4-6',
       max_tokens: 1024,
-      system:     buildSystemPrompt(userProfile),
+      system:     buildSystemPrompt(userProfile, foodPreferences),
       messages: [{
         role: 'user',
         content: [
@@ -266,8 +319,12 @@ app.post('/analyze-photo', async (req, res) => {
       }],
     });
 
-    const aiText     = response.content[0]?.text ?? '';
-    const displayText = stripMarkdown(aiText.replace(/<meal_log>[\s\S]*?<\/meal_log>/, '').trim());
+    const aiText      = response.content[0]?.text ?? '';
+    const displayText = stripMarkdown(
+      aiText
+        .replace(/<meal_log>[\s\S]*?<\/meal_log>/, '')
+        .trim()
+    );
 
     const meal      = parseMealLog(aiText);
     const shouldLog = !!(meal && meal.logged === true && meal.name && meal.calories > 0);
@@ -379,6 +436,30 @@ app.post('/tts', async (req, res) => {
   }
 });
 
+// ─── POST /promo/redeem ───────────────────────────────────────────────────────
+// Validates a promo code and records the redemption.
+// Returns { valid: true, plan } on success or { valid: false, error } on failure.
+// To revoke a code: open backend/promo_redemptions.json and set "revoked": true.
+app.post('/promo/redeem', (req, res) => {
+  const { code, userId, email } = req.body;
+  if (!code) return res.status(400).json({ valid: false, error: 'code is required' });
+
+  const entry = promoData.codes[code];
+  if (!entry || entry.revoked) {
+    return res.json({ valid: false, error: 'Invalid code' });
+  }
+
+  entry.redemptions.push({
+    userId:      userId    || '',
+    email:       email     || '',
+    redeemedAt:  new Date().toISOString(),
+  });
+  savePromoData();
+
+  console.log(`[promo] "${code}" redeemed by ${email || userId} → plan: ${entry.plan}`);
+  res.json({ valid: true, plan: entry.plan });
+});
+
 // ─── GET /health ──────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
@@ -386,7 +467,7 @@ app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 app.listen(port, () => {
   const anthropicOk   = !!process.env.ANTHROPIC_API_KEY;
   const elevenLabsOk  = !!process.env.ELEVENLABS_API_KEY;
-  console.log(`\nFit AI backend running on http://localhost:${port}`);
+  console.log(`\nFoodChat AI backend running on http://localhost:${port}`);
   console.log(`  ANTHROPIC_API_KEY:   ${anthropicOk  ? 'loaded ✓' : 'MISSING ✗ — check backend/.env'}`);
   console.log(`  ELEVENLABS_API_KEY:  ${elevenLabsOk ? 'loaded ✓' : 'MISSING ✗ — TTS will fail'}`);
   console.log(`  ElevenLabs voice:    ${ELEVENLABS_VOICE_ID}`);

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import {
   View, Text, Image, StyleSheet, Animated,
-  TouchableOpacity, Dimensions,
+  TouchableOpacity, Dimensions, ScrollView,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,8 +9,9 @@ import * as Haptics from 'expo-haptics';
 import { useTheme } from '../context/AppContext';
 
 const { width: W, height: H } = Dimensions.get('window');
-const CARD_W = W * 0.88;
-const IMG_H  = 220;
+const CARD_W  = Math.min(W * 0.88, 360);   // never wider than 360 on large screens
+const IMG_H   = H < 700 ? 160 : 220;       // smaller image on short screens (iPhone SE)
+const MAX_H   = H * 0.72;                  // card never taller than 72% of screen
 
 // Particle burst — 8 dots shoot outward from the checkmark
 const ANGLES   = [0, 45, 90, 135, 180, 225, 270, 315];
@@ -194,8 +195,13 @@ export default function MealLogOverlay({ visible, meal, onClose }) {
           </View>
         </View>
 
-        {/* ── Card content ── */}
-        <View style={styles.content}>
+        {/* ── Card content (scrollable so long replies don't overflow) ── */}
+        <ScrollView
+          style={styles.contentScroll}
+          contentContainerStyle={styles.content}
+          showsVerticalScrollIndicator={false}
+          bounces={false}
+        >
           {/* Meal name */}
           <Text style={[styles.mealName, { color: c.white }]} numberOfLines={2}>
             {meal.name}
@@ -222,7 +228,7 @@ export default function MealLogOverlay({ visible, meal, onClose }) {
           {!!meal.reply && (
             <View style={[styles.replyBox, { backgroundColor: c.accentDim, borderColor: c.accent + '44' }]}>
               <Ionicons name="sparkles" size={13} color={c.accent} style={{ marginTop: 1 }} />
-              <Text style={[styles.replyText, { color: c.white }]} numberOfLines={3}>
+              <Text style={[styles.replyText, { color: c.white }]} numberOfLines={4}>
                 {meal.reply}
               </Text>
             </View>
@@ -241,7 +247,7 @@ export default function MealLogOverlay({ visible, meal, onClose }) {
           </Animated.View>
 
           <Text style={[styles.hint, { color: c.muted }]}>Tap anywhere to close</Text>
-        </View>
+        </ScrollView>
       </Animated.View>
     </Animated.View>
   );
@@ -250,6 +256,7 @@ export default function MealLogOverlay({ visible, meal, onClose }) {
 const styles = StyleSheet.create({
   card: {
     width:        CARD_W,
+    maxHeight:    MAX_H,
     borderRadius: 24,
     borderWidth:  1,
     overflow:     'hidden',
@@ -302,6 +309,9 @@ const styles = StyleSheet.create({
     shadowOpacity:    1,
     shadowRadius:     24,
     elevation:        16,
+  },
+  contentScroll: {
+    flexShrink: 1,
   },
   content: {
     padding: 18,

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import {
   View, Text, ScrollView, TextInput, TouchableOpacity,
   StyleSheet, KeyboardAvoidingView, Platform, Animated, Image, Alert,
@@ -9,7 +9,10 @@ import * as ImagePicker from 'expo-image-picker';
 import { useRoute } from '@react-navigation/native';
 import { speakWithElevenLabs, stopSpeech } from '../utils/ttsService';
 import { formatTime } from '../utils/foodParser';
-import { getFoodImageUrl, getFoodColor } from '../utils/imageService';
+import { getOrFetchFoodImage, getFoodColor } from '../utils/imageService';
+import { replaceImage } from '../utils/imageCorrections';
+import { computeFoodPreferences } from '../utils/foodPreferences';
+import ImageFeedbackModal from '../components/ImageFeedbackModal';
 import { useMealContext } from '../context/MealContext';
 import { useVoiceInput } from '../hooks/useVoiceInput';
 import { useApp, useTheme } from '../context/AppContext';
@@ -30,8 +33,8 @@ const GREETING = {
   id: 0,
   role: 'ai',
   text:
-    "Hi! I'm your AI Food Assistant 🤖\n\n" +
-    "Tap the mic above to speak your meal, snap a photo with the camera button, or just type below — I'll log everything automatically!",
+    "Hi! I'm your FoodChat AI Assistant 🤖\n\n" +
+    "Tap the mic button in the bottom bar to speak a meal from anywhere in the app, or just type below — I'll log everything automatically!",
 };
 
 const SUGGESTIONS = [
@@ -105,7 +108,10 @@ const makeStyles = (c) => StyleSheet.create({
   // Meal log card
   mealCard:          { backgroundColor: c.card2, borderRadius: 14, borderWidth: 1, borderColor: c.border, overflow: 'hidden' },
   mealCardTop:       { flexDirection: 'row', gap: 12, padding: 12 },
-  mealCardImg:       { width: 72, height: 72, borderRadius: 10, flexShrink: 0 },
+  mealCardImg:       { width: 72, height: 72, borderRadius: 10, flexShrink: 0, overflow: 'hidden' },
+  mealCardImgEmpty:  { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  imgEditBadge:      { position: 'absolute', bottom: 4, right: 4, backgroundColor: 'rgba(0,0,0,0.65)', borderRadius: 6, padding: 3 },
+  imgLowConfBadge:   { position: 'absolute', top: 4, left: 4, backgroundColor: 'rgba(0,0,0,0.65)', borderRadius: 6, padding: 2 },
   mealCardInfo:      { flex: 1, justifyContent: 'center', gap: 6 },
   mealCardName:      { fontSize: 14, fontWeight: '700', color: c.white, lineHeight: 19 },
   mealCardCalRow:    { flexDirection: 'row', alignItems: 'center' },
@@ -203,16 +209,43 @@ function MacroStat({ icon, color, label, value, s }) {
   );
 }
 
-function MealLogCard({ items, total, primaryUri, fallbackColor, s, c }) {
+function MealLogCard({ items, total, primaryUri, fallbackColor, imageConfidence, onImagePress, s, c }) {
   const mealLabel =
     items.length === 1
       ? items[0].name
       : items.slice(0, 2).map((i) => i.name).join(' & ') +
         (items.length > 2 ? ` +${items.length - 2}` : '');
+  const isLowConf = imageConfidence !== 'high';
   return (
     <View style={s.mealCard}>
       <View style={s.mealCardTop}>
-        <Image source={{ uri: primaryUri }} style={[s.mealCardImg, { backgroundColor: fallbackColor }]} resizeMode="cover" />
+        {/* Image — tappable for user correction */}
+        <TouchableOpacity
+          style={[s.mealCardImg, { backgroundColor: fallbackColor }]}
+          onPress={onImagePress}
+          activeOpacity={onImagePress ? 0.8 : 1}
+          disabled={!onImagePress}
+        >
+          {primaryUri ? (
+            <Image source={{ uri: primaryUri }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />
+          ) : (
+            <View style={s.mealCardImgEmpty}>
+              <Ionicons name="restaurant-outline" size={26} color="rgba(255,255,255,0.35)" />
+            </View>
+          )}
+          {/* Low-confidence warning */}
+          {isLowConf && primaryUri && (
+            <View style={s.imgLowConfBadge}>
+              <Ionicons name="help-circle" size={11} color="#F59E0B" />
+            </View>
+          )}
+          {/* Edit hint */}
+          {onImagePress && (
+            <View style={s.imgEditBadge}>
+              <Ionicons name="pencil" size={8} color="#FFF" />
+            </View>
+          )}
+        </TouchableOpacity>
         <View style={s.mealCardInfo}>
           <Text style={s.mealCardName} numberOfLines={2}>{mealLabel}</Text>
           <View style={s.mealCardCalRow}>
@@ -344,15 +377,38 @@ export default function HelperScreen() {
   const route = useRoute();
   const showOverlay = useMealOverlay();
 
-  const [messages, setMessages] = useState([GREETING]);
-  const [input,    setInput]    = useState('');
-  const [typing,   setTyping]   = useState(false);
+  // Initialize with GREETING + any messages already logged via the tab mic
+  const [messages, setMessages] = useState(() => {
+    const stored = state.chatMessages;
+    if (!stored?.length) return [GREETING];
+    return [
+      GREETING,
+      ...stored.map((m) => ({ id: m.id, role: m.role, text: m.text, mealData: m.mealData })),
+    ];
+  });
+  const [input,        setInput]        = useState('');
+  const [typing,       setTyping]       = useState(false);
+  const [feedbackItem, setFeedbackItem] = useState(null); // { name, imageUrl, imageConfidence, voteStats, msgId }
 
   const scrollRef         = useRef(null);
   const timerRef          = useRef(null);
   const chatHistoryRef    = useRef([]); // API-format history [{ role, content }]
   const presetSentRef     = useRef(null); // track which preset we've already auto-sent
   const recentlyLoggedRef = useRef([]);  // [{ name: string, ts: number }]
+  // Track how many chatMessages we've already merged so we only append new ones
+  const syncedCountRef    = useRef(state.chatMessages.length);
+
+  // Sync messages added externally by the tab mic (ADD_CHAT_MESSAGE from App.js)
+  useEffect(() => {
+    const newCount = state.chatMessages.length;
+    if (newCount <= syncedCountRef.current) return;
+    const incoming = state.chatMessages.slice(syncedCountRef.current);
+    syncedCountRef.current = newCount;
+    setMessages((prev) => [
+      ...prev,
+      ...incoming.map((m) => ({ id: m.id, role: m.role, text: m.text, mealData: m.mealData })),
+    ]);
+  }, [state.chatMessages.length]);
 
   // ── Duplicate-log guard ──────────────────────────────────────────────────────
   // Returns true if a meal with this name was already logged in the last 3 min.
@@ -372,12 +428,42 @@ export default function HelperScreen() {
     recentlyLoggedRef.current.push({ name: mealName, ts: Date.now() });
   };
 
+  // ── Image validation helpers ──────────────────────────────────────────────────
+  const feedbackTimerRef = useRef(null);
+
+  // Update the image + confidence stored on a specific chat message
+  const updateMessageImage = useCallback((msgId, newUri, newConfidence) => {
+    setMessages((prev) => prev.map((msg) =>
+      msg.id === msgId && msg.mealData
+        ? { ...msg, mealData: { ...msg.mealData, primaryUri: newUri, imageConfidence: newConfidence ?? (newUri ? 'high' : 'low') } }
+        : msg
+    ));
+  }, []);
+
+  /**
+   * Schedule auto-prompt after the meal overlay finishes (~5 s).
+   * Cancelled if user taps the image card first.
+   */
+  const scheduleFeedbackPrompt = useCallback((item) => {
+    clearTimeout(feedbackTimerRef.current);
+    feedbackTimerRef.current = setTimeout(() => setFeedbackItem(item), 5000);
+  }, []);
+
+  const handleImageSelect = useCallback(async (uri) => {
+    const fi = feedbackItem;
+    if (!fi) return;
+    await replaceImage(fi.name, uri);
+    updateMessageImage(fi.msgId, uri, 'high');
+    setFeedbackItem(null);
+  }, [feedbackItem, updateMessageImage]);
+
   useEffect(() => {
     const t = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
     return () => clearTimeout(t);
   }, [messages, typing]);
 
   useEffect(() => () => clearTimeout(timerRef.current), []);
+  useEffect(() => () => clearTimeout(feedbackTimerRef.current), []);
 
   // Stop any ongoing speech when leaving this screen; clear the speaking flag too
   useEffect(() => () => { stopSpeech(); markStopped(); }, []);
@@ -393,6 +479,12 @@ export default function HelperScreen() {
     useVoiceInput({ onResult: handleVoiceResult });
 
   const handleMicPress = () => { if (isListening) stopListening(); else startListening(); };
+
+  // Recency-weighted food preferences — recomputed only when dailyLogs changes
+  const foodPreferences = useMemo(
+    () => computeFoodPreferences(state.dailyLogs),
+    [state.dailyLogs],
+  );
 
   // ── Core send logic — calls backend → real Anthropic API ──────────────────
   const dispatchSend = async (text) => {
@@ -420,7 +512,7 @@ export default function HelperScreen() {
       const res = await fetch(`${BACKEND_URL}/chat`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: trimmed, history: historySnapshot, userProfile: profileForAI }),
+        body: JSON.stringify({ message: trimmed, history: historySnapshot, userProfile: profileForAI, foodPreferences }),
       });
 
       if (!res.ok) {
@@ -449,37 +541,41 @@ export default function HelperScreen() {
 
       if (validMeal) {
         const m = data.meal;
-        const imageKey   = m.imageKey || 'default';
-        const imageUrl   = getFoodImageUrl(imageKey);
-        const imageColor = getFoodColor(imageKey);
+        const { uri: finalUri, confidence: finalConfidence } =
+          await getOrFetchFoodImage(m.name);
+        const foodVerified = finalConfidence === 'verified';
+        const imgColor     = getFoodColor(m.imageKey || m.name);
 
         if (!isDuplicateLog(m.name)) {
-          console.log('[chat] logging meal:', m.name, m.calories, 'kcal');
-          // First occurrence within the 3-minute window — log it
+          console.log('[chat] logging meal:', m.name, m.calories, 'kcal | verified:', foodVerified);
+          const msgId = Date.now() + 1;
           addMeal({
             id: generateMealId(), name: m.name, time: formatTime(),
             kcal: m.calories, protein: m.protein, carbs: m.carbs, fat: m.fat,
-            uri: imageUrl, fallbackColor: imageColor,
+            uri: finalUri, fallbackColor: imgColor,
           });
           markLogged(m.name);
           showOverlay({
-            name:     m.name,
-            calories: m.calories,
-            protein:  m.protein,
-            carbs:    m.carbs,
-            fat:      m.fat,
-            imageUrl,
-            reply:    data.reply,
+            name: m.name, calories: m.calories, protein: m.protein,
+            carbs: m.carbs, fat: m.fat, imageUrl: finalUri, reply: data.reply,
           });
-          const items = [{ name: m.name, calories: m.calories, protein: m.protein, carbs: m.carbs, fat: m.fat, grams: 0, imageUrl, color: imageColor }];
+          const items = [{ name: m.name, calories: m.calories, protein: m.protein, carbs: m.carbs, fat: m.fat, grams: 0 }];
           const total = { calories: m.calories, protein: m.protein, carbs: m.carbs, fat: m.fat };
           setMessages((prev) => [...prev, {
-            id: Date.now() + 1, role: 'ai',
+            id: msgId, role: 'ai',
             text: data.reply || 'Logged!',
-            mealData: { items, total, primaryUri: imageUrl, fallbackColor: imageColor },
+            mealData: { items, total, primaryUri: finalUri, fallbackColor: imgColor, imageConfidence: finalConfidence, voteStats: {} },
           }]);
+          if (!foodVerified) {
+            scheduleFeedbackPrompt({
+              name:            m.name,
+              imageUrl:        finalUri,
+              imageConfidence: finalConfidence,
+              voteStats:       {},
+              msgId,
+            });
+          }
         } else {
-          // Duplicate within 3-min window — show reply but skip the log + overlay
           console.log('[chat] duplicate log skipped for:', m.name);
           setMessages((prev) => [...prev, { id: Date.now() + 1, role: 'ai', text: data.reply }]);
         }
@@ -499,11 +595,9 @@ export default function HelperScreen() {
     }
   };
 
-  // ── Auto-send preset from navigation params (voice mic / AI Insight banner) ─
+  // ── Auto-send preset from navigation params (AI Insight banner etc.) ────────
   useEffect(() => {
     const preset    = route.params?.preset;
-    // presetKey is a timestamp set by the tab mic so the same phrase can be
-    // sent multiple times in a row without being de-duplicated
     const presetKey = route.params?.presetKey ?? preset;
     if (preset && presetKey !== presetSentRef.current) {
       presetSentRef.current = presetKey;
@@ -582,35 +676,41 @@ export default function HelperScreen() {
                      && data.meal?.name && (data.meal?.calories ?? 0) > 0;
 
       if (validMeal) {
-        const m          = data.meal;
-        const imageKey   = m.imageKey || 'default';
-        const imageUrl   = getFoodImageUrl(imageKey);
-        const imageColor = getFoodColor(imageKey);
+        const m = data.meal;
+        const { uri: finalUri, confidence: finalConfidence } =
+          await getOrFetchFoodImage(m.name);
+        const foodVerified = finalConfidence === 'verified';
+        const imgColor     = getFoodColor(m.imageKey || m.name);
 
         if (!isDuplicateLog(m.name)) {
-          console.log('[photo] logging meal:', m.name, m.calories, 'kcal');
+          console.log('[photo] logging meal:', m.name, m.calories, 'kcal | verified:', foodVerified);
+          const msgId = Date.now() + 1;
           addMeal({
             id: generateMealId(), name: m.name, time: formatTime(),
             kcal: m.calories, protein: m.protein, carbs: m.carbs, fat: m.fat,
-            uri: imageUrl, fallbackColor: imageColor,
+            uri: finalUri, fallbackColor: imgColor,
           });
           markLogged(m.name);
           showOverlay({
-            name:     m.name,
-            calories: m.calories,
-            protein:  m.protein,
-            carbs:    m.carbs,
-            fat:      m.fat,
-            imageUrl,
-            reply:    data.reply,
+            name: m.name, calories: m.calories, protein: m.protein,
+            carbs: m.carbs, fat: m.fat, imageUrl: finalUri, reply: data.reply,
           });
-          const items = [{ name: m.name, calories: m.calories, protein: m.protein, carbs: m.carbs, fat: m.fat, grams: 0, imageUrl, color: imageColor }];
+          const items = [{ name: m.name, calories: m.calories, protein: m.protein, carbs: m.carbs, fat: m.fat, grams: 0 }];
           const total = { calories: m.calories, protein: m.protein, carbs: m.carbs, fat: m.fat };
           setMessages((prev) => [...prev, {
-            id: Date.now() + 1, role: 'ai',
+            id: msgId, role: 'ai',
             text: data.reply || 'Logged!',
-            mealData: { items, total, primaryUri: imageUrl, fallbackColor: imageColor },
+            mealData: { items, total, primaryUri: finalUri, fallbackColor: imgColor, imageConfidence: finalConfidence, voteStats: {} },
           }]);
+          if (!foodVerified) {
+            scheduleFeedbackPrompt({
+              name:            m.name,
+              imageUrl:        finalUri,
+              imageConfidence: finalConfidence,
+              voteStats:       {},
+              msgId,
+            });
+          }
         } else {
           setMessages((prev) => [...prev, { id: Date.now() + 1, role: 'ai', text: data.reply }]);
         }
@@ -639,7 +739,7 @@ export default function HelperScreen() {
         <View style={s.header}>
           <View>
             <Text style={s.title}>AI Helper</Text>
-            <Text style={s.subtitle}>Powered by FitChat AI</Text>
+            <Text style={s.subtitle}>Powered by FoodChat AI</Text>
           </View>
           <View style={s.onlineBadge}>
             <View style={s.onlineDot} />
@@ -677,7 +777,26 @@ export default function HelperScreen() {
                 <AIAvatar s={s} />
                 <View style={s.aiBubbleWrap}>
                   {msg.text ? <View style={s.aiBubble}><Text style={s.aiBubbleText}>{msg.text}</Text></View> : null}
-                  {msg.mealData && <MealLogCard s={s} c={c} items={msg.mealData.items} total={msg.mealData.total} primaryUri={msg.mealData.primaryUri} fallbackColor={msg.mealData.fallbackColor} />}
+                  {msg.mealData && (
+                    <MealLogCard
+                      s={s} c={c}
+                      items={msg.mealData.items}
+                      total={msg.mealData.total}
+                      primaryUri={msg.mealData.primaryUri}
+                      fallbackColor={msg.mealData.fallbackColor}
+                      imageConfidence={msg.mealData.imageConfidence}
+                      onImagePress={msg.mealData.imageConfidence !== 'verified' ? () => {
+                        clearTimeout(feedbackTimerRef.current);
+                        setFeedbackItem({
+                          name:            msg.mealData.items[0]?.name ?? 'Meal',
+                          imageUrl:        msg.mealData.primaryUri,
+                          imageConfidence: msg.mealData.imageConfidence,
+                          voteStats:       msg.mealData.voteStats,
+                          msgId:           msg.id,
+                        });
+                      } : null}
+                    />
+                  )}
                 </View>
               </View>
             );
@@ -690,9 +809,6 @@ export default function HelperScreen() {
 
         {/* ── Input bar ── */}
         <View style={s.inputBar}>
-          <TouchableOpacity style={s.cameraBtn} onPress={handleCameraPress} activeOpacity={0.8}>
-            <Ionicons name="camera-outline" size={22} color={c.muted} />
-          </TouchableOpacity>
           <TextInput
             style={s.input}
             value={isListening ? transcript : input}
@@ -711,6 +827,16 @@ export default function HelperScreen() {
         </View>
 
       </KeyboardAvoidingView>
+
+      {/* ── Image feedback modal ── */}
+      <ImageFeedbackModal
+        visible={!!feedbackItem}
+        item={feedbackItem}
+        currentUri={feedbackItem?.imageUrl}
+        onSelect={handleImageSelect}
+        onClose={() => setFeedbackItem(null)}
+      />
+
     </SafeAreaView>
   );
 }

@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "FitChat AI",
+    "name": "FoodChat AI",
     "slug": "meal-planner",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -14,7 +14,11 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.fitchatai.app"
+      "bundleIdentifier": "com.jadon.foodchatai",
+      "icon": "./assets/icon.png",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -22,10 +26,15 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.fitchatai.app"
+      "package": "com.foodchatai.app"
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "5a39c4ba-1a64-4932-911f-bbf5709e5010"
+      }
     }
   }
 }

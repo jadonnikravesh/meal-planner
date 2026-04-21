@@ -1,5 +1,6 @@
 import * as Notifications from 'expo-notifications';
 import { RULES, pickRandom } from './rules';
+import { getNextSundayAt8pm } from '../utils/weightEstimation';
 
 /**
  * Time slots for the three daily notifications.
@@ -74,7 +75,7 @@ async function scheduleAt(hour, minute, title, body, identifier) {
 }
 
 /**
- * Cancel all previously scheduled FitChat AI notifications and reschedule fresh
+ * Cancel all previously scheduled FoodChat AI notifications and reschedule fresh
  * ones based on the current daily data snapshot and user settings.
  *
  * @param {object} data      Shape: { mealsLogged, calories, calorieTarget, protein, proteinTarget }
@@ -100,7 +101,7 @@ export async function scheduleDailyNotifications(data, settings = {}) {
       const id = await scheduleAt(
         time.hour,
         time.minute,
-        'FitChat AI',
+        'FoodChat AI',
         result.message,
         `fitai_${slotName}`,
       );
@@ -111,4 +112,33 @@ export async function scheduleDailyNotifications(data, settings = {}) {
   }
 
   return scheduled;
+}
+
+/**
+ * Schedule (or re-schedule) the weekly weight check-in notification.
+ * Fires the next Sunday at 20:00 local time with identifier 'fitai_weekly_weight'.
+ * Safe to call multiple times — cancels any existing instance first.
+ */
+export async function scheduleWeeklyWeightNotification() {
+  try {
+    await Notifications.cancelScheduledNotificationAsync('fitai_weekly_weight');
+  } catch (_) {
+    // Notification may not exist yet — that's fine
+  }
+
+  const fire = getNextSundayAt8pm();
+
+  try {
+    await Notifications.scheduleNotificationAsync({
+      identifier: 'fitai_weekly_weight',
+      content: {
+        title: 'FoodChat AI',
+        body:  'Your weekly weight estimate is ready 📊 Tap to review your progress.',
+        sound: true,
+      },
+      trigger: { date: fire },
+    });
+  } catch (err) {
+    console.warn('[Notifications] Failed to schedule weekly weight notification:', err.message);
+  }
 }

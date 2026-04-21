@@ -19,7 +19,6 @@ const DEFAULT_PROFILE = {
   proteinTarget: 150,
   carbTarget: 225,
   fatTarget: 56,
-  waterTarget: 2700,
   dietaryRestrictions: '',  // e.g. "vegetarian, gluten-free"
   allergies: '',            // e.g. "peanuts, shellfish"
 };
@@ -27,7 +26,7 @@ const DEFAULT_PROFILE = {
 const INITIAL_STATE = {
   isOnboarded: false,
   userProfile: DEFAULT_PROFILE,
-  dailyLogs: {},      // { 'YYYY-MM-DD': { calories, protein, carbs, fat, water, meals[] } }
+  dailyLogs: {},      // { 'YYYY-MM-DD': { calories, protein, carbs, fat, meals[] } }
   chatMessages: [],   // persistent chat history
   settings: {
     darkMode: true,
@@ -36,17 +35,42 @@ const INITIAL_STATE = {
     mealReminders: true,
     voiceEnabled: true,
   },
+  weeklyReview: {
+    lastReviewedDate: null,   // 'YYYY-MM-DD' — date of last completed/dismissed review
+    weightHistory: [],        // [{ date: 'YYYY-MM-DD', weight: string }]
+  },
+  subscription: {
+    status:         'none',   // 'none' | 'trial' | 'active' | 'canceled'
+    plan:           null,     // 'monthly' | 'yearly'
+    subscriptionId: null,
+    customerId:     null,
+    trialEnd:       null,     // Unix timestamp
+  },
 };
 
 function ensureLog(existing) {
-  return existing || { calories: 0, protein: 0, carbs: 0, fat: 0, water: 0, meals: [] };
+  return existing || { calories: 0, protein: 0, carbs: 0, fat: 0, meals: [] };
 }
 
 function reducer(state, action) {
   switch (action.type) {
 
-    case 'LOAD_STATE':
-      return { ...INITIAL_STATE, ...action.payload };
+    case 'LOAD_STATE': {
+      const loaded = action.payload;
+      return {
+        ...INITIAL_STATE,
+        ...loaded,
+        // Deep-merge nested objects so old saves without them still work
+        weeklyReview: {
+          ...INITIAL_STATE.weeklyReview,
+          ...(loaded.weeklyReview || {}),
+        },
+        subscription: {
+          ...INITIAL_STATE.subscription,
+          ...(loaded.subscription || {}),
+        },
+      };
+    }
 
     case 'COMPLETE_ONBOARDING': {
       const targets = calculateTargets(action.payload);
@@ -135,13 +159,6 @@ function reducer(state, action) {
       return { ...state, dailyLogs: { ...state.dailyLogs, [date]: updated } };
     }
 
-    case 'LOG_WATER': {
-      const { date, amount } = action.payload;
-      const existing = ensureLog(state.dailyLogs[date]);
-      const updated = { ...existing, water: (existing.water || 0) + amount };
-      return { ...state, dailyLogs: { ...state.dailyLogs, [date]: updated } };
-    }
-
     case 'SET_DAY_SUMMARY': {
       const { date, summary } = action.payload;
       const existing = ensureLog(state.dailyLogs[date]);
@@ -171,6 +188,39 @@ function reducer(state, action) {
 
     case 'SET_VOICE_ENABLED':
       return { ...state, settings: { ...state.settings, voiceEnabled: action.payload } };
+
+    // Dismiss the weekly review without saving a new weight.
+    // Marks the date so the review doesn't appear again for 7 days.
+    case 'DISMISS_WEEKLY_REVIEW':
+      return {
+        ...state,
+        weeklyReview: {
+          ...(state.weeklyReview || INITIAL_STATE.weeklyReview),
+          lastReviewedDate: action.payload,   // today's YYYY-MM-DD key
+        },
+      };
+
+    // Save user-confirmed weight and append to history.
+    case 'SAVE_WEIGHT_UPDATE': {
+      const { weight, date } = action.payload;
+      const prev = state.weeklyReview || INITIAL_STATE.weeklyReview;
+      return {
+        ...state,
+        userProfile: { ...state.userProfile, weight },
+        weeklyReview: {
+          ...prev,
+          lastReviewedDate: date,
+          weightHistory: [...(prev.weightHistory || []), { date, weight }],
+        },
+      };
+    }
+
+    // Merge partial subscription updates — called after Stripe returns a result.
+    case 'SET_SUBSCRIPTION':
+      return {
+        ...state,
+        subscription: { ...state.subscription, ...action.payload },
+      };
 
     case 'RESET_ONBOARDING':
       return { ...INITIAL_STATE };

@@ -733,7 +733,7 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         </Card>
 
-        <Text style={s.version}>FitChat AI · v1.0.0 · SDK 54</Text>
+        <Text style={s.version}>FoodChat AI · v1.0.0 · SDK 54</Text>
         <View style={{ height: 20 }} />
 
       </ScrollView>

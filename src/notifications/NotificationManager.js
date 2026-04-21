@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
-import { scheduleDailyNotifications } from './scheduler';
+import { scheduleDailyNotifications, scheduleWeeklyWeightNotification } from './scheduler';
 import { getTodayKey } from '../utils/nutrition';
 
 // ─── Global foreground handler ────────────────────────────────────────────────
@@ -17,7 +17,7 @@ Notifications.setNotificationHandler({
 // ─── Android notification channel ────────────────────────────────────────────
 if (Platform.OS === 'android') {
   Notifications.setNotificationChannelAsync('fitai', {
-    name:       'FitChat AI Reminders',
+    name:       'FoodChat AI Reminders',
     importance: Notifications.AndroidImportance.DEFAULT,
     sound:      'default',
   });
@@ -103,6 +103,8 @@ export function useNotifications(appState) {
       const data     = buildNotifData(appState);
       const settings = buildNotifSettings(appState);
       scheduleDailyNotifications(data, settings).catch(() => {});
+      // Schedule the weekly weight check-in (fires next Sunday 8 pm)
+      scheduleWeeklyWeightNotification().catch(() => {});
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   View,
   Text,
@@ -8,12 +8,14 @@ import {
   Modal,
   TextInput,
   StatusBar,
+  Animated,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { RADIUS, SPACING } from '../theme';
 import { useApp, useTheme } from '../context/AppContext';
+import { useMealContext } from '../context/MealContext';
 import { getTodayKey, getGreeting, formatDate } from '../utils/nutrition';
 import CircularProgress from '../components/CircularProgress';
 import MealCard from '../components/MealCard';
@@ -26,8 +28,9 @@ const WATER_QUICK = [
 
 export default function DashboardScreen({ navigation }) {
   const insets = useSafeAreaInsets();
-  const { state, dispatch } = useApp();
+  const { state } = useApp();
   const C = useTheme();
+  const { addWater } = useMealContext();
 
   const { userProfile, dailyLogs } = state;
   const todayKey = getTodayKey();
@@ -58,9 +61,42 @@ export default function DashboardScreen({ navigation }) {
     { label: 'Fat',     value: fat,     max: fatTarget,  unit: 'g', color: C.orange },
   ];
 
-  const addWater = (ml) => {
-    dispatch({ type: 'LOG_WATER', payload: { date: todayKey, amount: ml } });
-  };
+  // ── Animated water bar ────────────────────────────────────────────────────────
+  const waterBarAnim = useRef(new Animated.Value(waterPct)).current;
+  const prevWaterPct = useRef(waterPct);
+  useEffect(() => {
+    if (prevWaterPct.current === waterPct) return;
+    prevWaterPct.current = waterPct;
+    Animated.timing(waterBarAnim, {
+      toValue: waterPct,
+      duration: 420,
+      useNativeDriver: false,
+    }).start();
+  }, [waterPct]);
+  const animWaterWidth = waterBarAnim.interpolate({
+    inputRange: [0, 100],
+    outputRange: ['0%', '100%'],
+  });
+
+  // ── Animated water number (count-up) ─────────────────────────────────────────
+  const waterNumAnim = useRef(new Animated.Value(water)).current;
+  const prevWater    = useRef(water);
+  const [displayedWater, setDisplayedWater] = useState(water);
+  useEffect(() => {
+    if (prevWater.current === water) return;
+    prevWater.current = water;
+    const anim = Animated.timing(waterNumAnim, {
+      toValue: water,
+      duration: 350,
+      useNativeDriver: false,
+    });
+    const id = waterNumAnim.addListener(({ value }) => setDisplayedWater(Math.round(value)));
+    anim.start(({ finished }) => {
+      waterNumAnim.removeListener(id);
+      if (finished) setDisplayedWater(water);
+    });
+    return () => { anim.stop(); waterNumAnim.removeListener(id); };
+  }, [water]);
 
   const handleCustomWater = () => {
     const ml = parseInt(customWater, 10);
@@ -161,12 +197,12 @@ export default function DashboardScreen({ navigation }) {
               <Text style={[styles.waterTitle, { color: C.text }]}>Water Intake</Text>
             </View>
             <Text style={[styles.waterAmount, { color: C.blue }]}>
-              {(water / 1000).toFixed(1)} / {(waterTarget / 1000).toFixed(1)} L
+              {(displayedWater / 1000).toFixed(1)} / {(waterTarget / 1000).toFixed(1)} L
             </Text>
           </View>
 
           <View style={[styles.waterTrack, { backgroundColor: C.borderLight }]}>
-            <View style={[styles.waterFill, { width: `${waterPct}%`, backgroundColor: C.blue }]} />
+            <Animated.View style={[styles.waterFill, { width: animWaterWidth, backgroundColor: C.blue }]} />
           </View>
 
           <Text style={[styles.waterPct, { color: C.textMuted }]}>{waterPct}% of daily goal</Text>
@@ -235,7 +271,7 @@ export default function DashboardScreen({ navigation }) {
           {[
             { icon: '💪', num: `${protTarget - protein > 0 ? protTarget - protein : 0}g`, label: 'Protein Left', color: C.blue },
             { icon: '⚡', num: `${calRemaining}`, label: 'Kcal Left', color: C.accent },
-            { icon: '💧', num: `${((waterTarget - water) / 1000).toFixed(1)}L`, label: 'Water Left', color: C.teal },
+            { icon: '💧', num: `${(Math.max(0, waterTarget - displayedWater) / 1000).toFixed(1)}L`, label: 'Water Left', color: C.teal },
           ].map((s) => (
             <View key={s.label} style={[styles.statCard, { backgroundColor: C.surface, borderColor: C.border }]}>
               <Text style={styles.statIcon}>{s.icon}</Text>

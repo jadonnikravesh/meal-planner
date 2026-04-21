@@ -5,9 +5,9 @@ import { auth, db } from '../firebase/config';
 import { getTodayKey } from '../utils/nutrition';
 
 /**
- * MealContext — in-memory store for today's logged meals + water.
+ * MealContext — in-memory store for today's logged meals.
  *
- * Write-through: every ADD_MEAL / ADD_WATER also dispatches to AppContext
+ * Write-through: every ADD_MEAL also dispatches to AppContext
  * so data is persisted in dailyLogs[date] and survives app restarts.
  *
  * On mount: today's log is loaded from AppContext.dailyLogs[today] so a
@@ -21,7 +21,7 @@ const MealContext = createContext(null);
 
 const INITIAL = {
   loggedMeals: [],
-  totals: { calories: 0, protein: 0, carbs: 0, fat: 0, waterMl: 0 },
+  totals: { calories: 0, protein: 0, carbs: 0, fat: 0 },
 };
 
 function reducer(state, action) {
@@ -59,13 +59,6 @@ function reducer(state, action) {
       };
     }
 
-    case 'ADD_WATER': {
-      return {
-        ...state,
-        totals: { ...state.totals, waterMl: state.totals.waterMl + (action.payload || 0) },
-      };
-    }
-
     case 'UPDATE_MEAL': {
       const meal = action.payload;
       const updated = state.loggedMeals.map((m) =>
@@ -98,7 +91,6 @@ function reducer(state, action) {
           protein:  log.protein  || 0,
           carbs:    log.carbs    || 0,
           fat:      log.fat      || 0,
-          waterMl:  log.water    || 0,
         },
       };
     }
@@ -204,16 +196,8 @@ export function MealContextProvider({ children }) {
     }
   };
 
-  const addWater = (ml) => {
-    dispatch({ type: 'ADD_WATER', payload: ml });
-    appDispatch({
-      type:    'LOG_WATER',
-      payload: { date: getTodayKey(), amount: ml },
-    });
-  };
-
   return (
-    <MealContext.Provider value={{ ...state, addMeal, updateMeal, removeMeal, addWater }}>
+    <MealContext.Provider value={{ ...state, addMeal, updateMeal, removeMeal }}>
       {children}
     </MealContext.Provider>
   );

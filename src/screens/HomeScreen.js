@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, Image,
+  View, Text, ScrollView, TouchableOpacity, Image, Animated,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -8,10 +8,9 @@ import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Circle } from 'react-native-svg';
 import { useNavigation } from '@react-navigation/native';
 import { useTheme, useApp } from '../context/AppContext';
+import { useMealContext } from '../context/MealContext';
 import MealEditModal from '../components/MealEditModal';
-import { getTodayKey, getDateKey } from '../utils/nutrition';
-
-const STREAK = 0;
+import { getTodayKey, getDateKey, computeStreak } from '../utils/nutrition';
 
 // ─── Date helpers ─────────────────────────────────────────────────────────────
 function shiftDate(dateKey, days) {
@@ -32,6 +31,45 @@ function formatNavDate(dateKey) {
 function formatSubDate(dateKey) {
   const d = new Date(dateKey + 'T12:00:00');
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).toUpperCase();
+}
+
+// ─── Animated counter hook ────────────────────────────────────────────────────
+// `precision`: null = auto (integer or 1dp), number = fixed decimal places.
+// Used with precision=4 for the arc ring so the SVG draws smoothly.
+function useAnimatedValue(target, duration = 350, precision = null) {
+  const animValue  = useRef(new Animated.Value(target)).current;
+  const prevTarget = useRef(target);
+  const [displayed, setDisplayed] = useState(target);
+
+  useEffect(() => {
+    if (prevTarget.current === target) return;
+    prevTarget.current = target;
+
+    const round = (v) => {
+      if (precision !== null) {
+        const f = Math.pow(10, precision);
+        return Math.round(v * f) / f;
+      }
+      return Number.isInteger(target) ? Math.round(v) : Math.round(v * 10) / 10;
+    };
+
+    const anim = Animated.timing(animValue, {
+      toValue:         target,
+      duration,
+      useNativeDriver: false,
+    });
+
+    const id = animValue.addListener(({ value }) => setDisplayed(round(value)));
+
+    anim.start(({ finished }) => {
+      animValue.removeListener(id);
+      if (finished) setDisplayed(target);
+    });
+
+    return () => { anim.stop(); animValue.removeListener(id); };
+  }, [target]);
+
+  return displayed;
 }
 
 // ─── Open arc (270°, gap at the bottom) ──────────────────────────────────────
@@ -76,25 +114,49 @@ function ArcRing({ size, strokeWidth, progress, color, trackColor, children }) {
   );
 }
 
-// ─── Horizontal macro bar ─────────────────────────────────────────────────────
-function MacroBar({ label, consumed, goal, unit, color }) {
-  const pct       = Math.min(1, goal > 0 ? consumed / goal : 0);
-  const remaining = Math.max(0, goal - consumed);
-  const over      = consumed > goal;
+// ─── Animated horizontal macro bar ───────────────────────────────────────────
+function MacroBar({ label, consumed, goal, unit, color, c }) {
+  const rounded   = Math.round(consumed);
+  const targetPct = Math.min(1, goal > 0 ? rounded / goal : 0);
+
+  const displayNum = useAnimatedValue(rounded, 350);
+
+  const barAnim = useRef(new Animated.Value(targetPct)).current;
+  const prevPct = useRef(targetPct);
+
+  useEffect(() => {
+    if (prevPct.current === targetPct) return;
+    prevPct.current = targetPct;
+    Animated.timing(barAnim, {
+      toValue:         targetPct,
+      duration:        420,
+      useNativeDriver: false,
+    }).start();
+  }, [targetPct]);
+
+  const barWidth = barAnim.interpolate({
+    inputRange:  [0, 1],
+    outputRange: ['0%', '100%'],
+  });
+
+  const displayRounded = Math.round(displayNum);
+  const remaining      = Math.max(0, goal - displayRounded);
+  const over           = displayRounded > goal;
+
   return (
     <View style={{ flex: 1, gap: 5 }}>
-      <Text style={{ fontSize: 10, fontWeight: '700', color: '#FFFFFF99', textTransform: 'uppercase', letterSpacing: 0.7 }}>
+      <Text style={{ fontSize: 10, fontWeight: '700', color: c.muted, textTransform: 'uppercase', letterSpacing: 0.7 }}>
         {label}
       </Text>
-      <Text style={{ fontSize: 15, fontWeight: '800', color: '#FFFFFF' }}>
-        {consumed}
-        <Text style={{ fontSize: 11, fontWeight: '500', color: '#FFFFFF88' }}>/{goal}{unit}</Text>
+      <Text style={{ fontSize: 15, fontWeight: '800', color: c.white }}>
+        {displayRounded}
+        <Text style={{ fontSize: 11, fontWeight: '500', color: c.muted }}>/{goal}{unit}</Text>
       </Text>
-      <View style={{ height: 4, borderRadius: 2, backgroundColor: '#FFFFFF22', overflow: 'hidden' }}>
-        <View style={{ height: '100%', width: `${pct * 100}%`, borderRadius: 2, backgroundColor: over ? '#FF6B6B' : color }} />
+      <View style={{ height: 4, borderRadius: 2, backgroundColor: c.track, overflow: 'hidden' }}>
+        <Animated.View style={{ height: '100%', width: barWidth, borderRadius: 2, backgroundColor: color }} />
       </View>
-      <Text style={{ fontSize: 10, color: over ? '#FF9999' : '#FFFFFF77' }}>
-        {over ? `${consumed - goal}${unit} over` : `${remaining}${unit} left`}
+      <Text style={{ fontSize: 10, color: over ? c.red : c.muted }}>
+        {over ? `${displayRounded - goal}${unit} over` : `${remaining}${unit} left`}
       </Text>
     </View>
   );
@@ -182,37 +244,41 @@ function MealCard({ meal, c, onPress }) {
       style={{
         backgroundColor: c.card, borderRadius: 18, marginBottom: 12,
         borderWidth: 1, borderColor: c.border,
+        overflow: 'hidden', alignSelf: 'stretch',
       }}
     >
-      <View style={{ flexDirection: 'row', padding: 13, gap: 13, alignItems: 'center' }}>
+      <View style={{ flexDirection: 'row', padding: 12, gap: 12, alignItems: 'center' }}>
         <Image
           source={{ uri: meal.uri }}
-          style={{ width: 78, height: 78, borderRadius: 13, backgroundColor: meal.fallbackColor || '#2A2A3A' }}
+          style={{ width: 72, height: 72, borderRadius: 12, flexShrink: 0, backgroundColor: meal.fallbackColor || '#2A2A3A' }}
           resizeMode="cover"
         />
-        <View style={{ flex: 1, gap: 5 }}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <Text style={{ fontSize: 14, fontWeight: '700', color: c.white, flex: 1 }} numberOfLines={1}>{meal.name}</Text>
-            <Text style={{ fontSize: 12, color: c.muted, marginLeft: 6 }}>{meal.time}</Text>
+        {/* minWidth: 0 is required for flex children to shrink below their content size */}
+        <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <Text style={{ fontSize: 14, fontWeight: '700', color: c.white, flex: 1, minWidth: 0 }} numberOfLines={1}>
+              {meal.name}
+            </Text>
+            <Text style={{ fontSize: 11, color: c.muted, marginLeft: 8, flexShrink: 0 }}>{meal.time}</Text>
           </View>
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
             <Ionicons name="flame" size={13} color={c.fire} />
-            <Text style={{ fontSize: 13, color: c.white, fontWeight: '600' }}> {kcal} kcal</Text>
+            <Text style={{ fontSize: 13, color: c.white, fontWeight: '600', marginLeft: 3 }}>{kcal} kcal</Text>
           </View>
-          <View style={{ flexDirection: 'row', gap: 12 }}>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
             {[
-              { icon: 'flash',   color: c.protein, value: meal.protein, unit: 'g' },
-              { icon: 'leaf',    color: c.carbs,   value: meal.carbs,   unit: 'g' },
-              { icon: 'ellipse', color: c.fat,      value: meal.fat,     unit: 'g' },
+              { icon: 'flash',   color: c.protein, value: Math.round(meal.protein), unit: 'g' },
+              { icon: 'leaf',    color: c.carbs,   value: Math.round(meal.carbs),   unit: 'g' },
+              { icon: 'ellipse', color: c.fat,      value: Math.round(meal.fat),     unit: 'g' },
             ].map((chip) => (
-              <View key={chip.icon} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                <Ionicons name={chip.icon} size={12} color={chip.color} />
-                <Text style={{ fontSize: 12, color: c.muted }}>{chip.value}{chip.unit}</Text>
+              <View key={chip.icon} style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
+                <Ionicons name={chip.icon} size={11} color={chip.color} />
+                <Text style={{ fontSize: 11, color: c.muted }}>{chip.value}{chip.unit}</Text>
               </View>
             ))}
           </View>
         </View>
-        <Ionicons name="chevron-forward" size={16} color={c.muted} />
+        <Ionicons name="chevron-forward" size={15} color={c.muted} style={{ flexShrink: 0 }} />
       </View>
     </TouchableOpacity>
   );
@@ -243,31 +309,39 @@ export default function HomeScreen() {
   const { state }  = useApp();
   const c          = useTheme();
 
+  // Live in-memory totals from MealContext — updated immediately on add/edit/remove
+  const { totals: liveTotals, loggedMeals: liveMeals } = useMealContext();
+
   const today = getTodayKey();
   const [selectedDate, setSelectedDate] = useState(today);
   const isToday = selectedDate === today;
   const [editingMeal, setEditingMeal] = useState(null);
 
-  // Navigate between days
-  const goBack = () => setSelectedDate((d) => shiftDate(d, -1));
-  const goForward = () => {
-    if (!isToday) setSelectedDate((d) => shiftDate(d, 1));
-  };
+  const goBack    = () => setSelectedDate((d) => shiftDate(d, -1));
+  const goForward = () => { if (!isToday) setSelectedDate((d) => shiftDate(d, 1)); };
 
-  // Read data from persisted dailyLogs — MealContext write-through keeps today in sync
+  // Today → live MealContext (instant on any meal change)
+  // Past  → persisted dailyLogs (read-only history)
   const rawLog = state.dailyLogs?.[selectedDate] || {};
-  const dayTotals = {
-    calories: rawLog.calories || 0,
-    protein:  rawLog.protein  || 0,
-    carbs:    rawLog.carbs    || 0,
-    fat:      rawLog.fat      || 0,
-    waterMl:  rawLog.water    || 0,
-  };
-  // Normalize meals so MealCard always gets a .kcal field
-  const dayMeals = (rawLog.meals || []).map((m) => ({
-    ...m,
-    kcal: m.kcal ?? m.calories ?? 0,
-  }));
+  const dayTotals = isToday
+    ? {
+        calories: liveTotals.calories,
+        protein:  liveTotals.protein,
+        carbs:    liveTotals.carbs,
+        fat:      liveTotals.fat,
+      }
+    : {
+        calories: rawLog.calories || 0,
+        protein:  rawLog.protein  || 0,
+        carbs:    rawLog.carbs    || 0,
+        fat:      rawLog.fat      || 0,
+      };
+
+  const dayMeals = isToday
+    ? liveMeals.map((m) => ({ ...m, kcal: m.kcal ?? m.calories ?? 0 }))
+    : (rawLog.meals || []).map((m) => ({ ...m, kcal: m.kcal ?? m.calories ?? 0 }));
+
+  const streak = useMemo(() => computeStreak(state.dailyLogs), [state.dailyLogs]);
 
   const p = state.userProfile;
   const GOALS = {
@@ -275,13 +349,19 @@ export default function HomeScreen() {
     protein:  p.proteinTarget || 150,
     carbs:    p.carbTarget    || 225,
     fat:      p.fatTarget     || 56,
-    waterMl:  p.waterTarget   || 2700,
   };
 
-  const caloriesLeft = Math.max(0, GOALS.calories - dayTotals.calories);
-  const calProgress  = Math.min(1, GOALS.calories > 0 ? dayTotals.calories / GOALS.calories : 0);
+  const caloriesConsumed = Math.round(dayTotals.calories);
+  const caloriesLeft     = Math.max(0, GOALS.calories - caloriesConsumed);
+  const calProgress      = Math.min(1, GOALS.calories > 0 ? caloriesConsumed / GOALS.calories : 0);
 
-  const darkMode     = state.settings?.darkMode !== false;
+  // Animated values — drive the calorie ring and the EATEN/REMAINING labels
+  const animCalEaten = useAnimatedValue(caloriesConsumed, 350);
+  const animCalLeft  = useAnimatedValue(caloriesLeft,     350);
+  // precision=4 so the arc SVG interpolates smoothly (not just 0.1 steps)
+  const animArcProg  = useAnimatedValue(calProgress,      500, 4);
+
+  const darkMode       = state.settings?.darkMode !== false;
   const gradientColors = darkMode
     ? [c.accent, '#3D2F9E', '#1C1640', c.bg]
     : [c.accent, '#A090E8', '#D4CEFC', c.bg];
@@ -294,17 +374,17 @@ export default function HomeScreen() {
         <LinearGradient
           colors={gradientColors}
           locations={[0, 0.35, 0.65, 1]}
-          style={{ paddingHorizontal: 20, paddingBottom: 32 }}
+          style={{ paddingHorizontal: 20, paddingBottom: 40 }}
         >
           {/* ── App header row ── */}
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 14, paddingBottom: 16 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <Ionicons name="fitness-outline" size={24} color="#FFFFFF" />
-              <Text style={{ fontSize: 22, fontWeight: '700', color: '#FFFFFF', letterSpacing: 0.2 }}>FitChat AI</Text>
+              <Ionicons name="restaurant-outline" size={24} color="#FFFFFF" />
+              <Text style={{ fontSize: 22, fontWeight: '700', color: '#FFFFFF', letterSpacing: 0.2 }}>FoodChat AI</Text>
             </View>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(255,255,255,0.18)', borderRadius: 20, paddingHorizontal: 13, paddingVertical: 7 }}>
               <Ionicons name="flame" size={15} color="#FFD166" />
-              <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 15 }}>{STREAK}</Text>
+              <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 15 }}>{streak}</Text>
             </View>
           </View>
 
@@ -313,7 +393,6 @@ export default function HomeScreen() {
             <TouchableOpacity
               onPress={goBack}
               hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-              style={{ opacity: 1 }}
             >
               <Ionicons name="chevron-back" size={22} color="rgba(255,255,255,0.9)" />
             </TouchableOpacity>
@@ -339,72 +418,74 @@ export default function HomeScreen() {
             </TouchableOpacity>
           </View>
 
-          {/* ── Calorie ring — Eaten | Ring | Burned ── */}
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
-            <View style={{ alignItems: 'center', gap: 4, minWidth: 70 }}>
-              <Text style={{ fontSize: 10, fontWeight: '700', color: '#FFFFFFAA', textTransform: 'uppercase', letterSpacing: 0.8 }}>
-                Eaten
-              </Text>
-              <Text style={{ fontSize: 26, fontWeight: '800', color: '#FFFFFF' }}>
-                {dayTotals.calories}
-              </Text>
-              <Text style={{ fontSize: 11, color: '#FFFFFF88' }}>kcal</Text>
-            </View>
-
-            <ArcRing
-              size={190}
-              strokeWidth={13}
-              progress={calProgress}
-              color="#FFFFFF"
-              trackColor="rgba(255,255,255,0.18)"
-            >
-              <View style={{ alignItems: 'center', gap: 2, marginTop: -8 }}>
-                <Text style={{ fontSize: 11, fontWeight: '600', color: '#FFFFFFCC', textTransform: 'uppercase', letterSpacing: 0.8 }}>
-                  Remaining
-                </Text>
-                <Text style={{ fontSize: 44, fontWeight: '800', color: '#FFFFFF', letterSpacing: -1.5 }}>
-                  {caloriesLeft.toLocaleString()}
-                </Text>
-                <Text style={{ fontSize: 12, color: '#FFFFFF99' }}>
-                  /{GOALS.calories.toLocaleString()} kcal
-                </Text>
+          {/* ── Calorie ring — centered hero ── */}
+          {(() => {
+            // Light mode needs stronger contrast against the faded lavender gradient
+            const shadow = darkMode ? null : {
+              textShadowColor:  'rgba(40,20,120,0.45)',
+              textShadowOffset: { width: 0, height: 1 },
+              textShadowRadius: 6,
+            };
+            return (
+              <View style={{ alignItems: 'center', marginBottom: 20 }}>
+                <ArcRing
+                  size={214}
+                  strokeWidth={13}
+                  progress={animArcProg}
+                  color="#FFFFFF"
+                  trackColor={darkMode ? 'rgba(255,255,255,0.18)' : 'rgba(60,40,160,0.22)'}
+                >
+                  <View style={{ alignItems: 'center', gap: 2 }}>
+                    <Text style={{ fontSize: 11, fontWeight: '700', color: '#FFFFFF', textTransform: 'uppercase', letterSpacing: 0.8, ...shadow }}>
+                      Remaining
+                    </Text>
+                    <Text style={{ fontSize: 46, fontWeight: '800', color: '#FFFFFF', letterSpacing: -1.5, lineHeight: 52, ...shadow }}>
+                      {Math.round(animCalLeft).toLocaleString()}
+                    </Text>
+                    <Text style={{ fontSize: 12, color: darkMode ? '#FFFFFF99' : '#FFFFFFdd', ...shadow }}>
+                      /{GOALS.calories.toLocaleString()} kcal
+                    </Text>
+                    <Text style={{ fontSize: 11, color: darkMode ? '#FFFFFF66' : '#FFFFFFbb', marginTop: 4, ...shadow }}>
+                      {Math.round(animCalEaten).toLocaleString()} kcal consumed
+                    </Text>
+                  </View>
+                </ArcRing>
               </View>
-            </ArcRing>
+            );
+          })()}
 
-            <View style={{ alignItems: 'center', gap: 4, minWidth: 70 }}>
-              <Text style={{ fontSize: 10, fontWeight: '700', color: '#FFFFFFAA', textTransform: 'uppercase', letterSpacing: 0.8 }}>
-                Burned
-              </Text>
-              <Text style={{ fontSize: 26, fontWeight: '800', color: '#FFFFFF' }}>0</Text>
-              <Text style={{ fontSize: 11, color: '#FFFFFF88' }}>kcal</Text>
-            </View>
-          </View>
-
-          {/* ── Macro bars ── */}
-          <View style={{
-            flexDirection: 'row', gap: 16, marginTop: 28,
-            backgroundColor: 'rgba(255,255,255,0.10)',
-            borderRadius: 18, padding: 16,
-          }}>
-            <MacroBar label="Protein" consumed={dayTotals.protein}  goal={GOALS.protein}  unit="g"  color="#FF9B9B" />
-            <View style={{ width: 1, backgroundColor: 'rgba(255,255,255,0.15)' }} />
-            <MacroBar label="Carbs"   consumed={dayTotals.carbs}    goal={GOALS.carbs}    unit="g"  color="#FFD166" />
-            <View style={{ width: 1, backgroundColor: 'rgba(255,255,255,0.15)' }} />
-            <MacroBar label="Fat"     consumed={dayTotals.fat}      goal={GOALS.fat}      unit="g"  color="#74C0FC" />
-            <View style={{ width: 1, backgroundColor: 'rgba(255,255,255,0.15)' }} />
-            <MacroBar label="Water"   consumed={Math.round(dayTotals.waterMl)} goal={GOALS.waterMl} unit="ml" color="#63E6BE" />
-          </View>
         </LinearGradient>
 
-        {/* ══ CONTENT BELOW GRADIENT ═════════════════════════════════════════ */}
-        <View style={{ paddingHorizontal: 16, paddingTop: 20 }}>
+        {/* ══ MACRO BARS CARD — floats over bottom of gradient ══════════════ */}
+        <View style={{
+          flexDirection: 'row',
+          backgroundColor: c.card,
+          borderRadius: 18,
+          borderWidth: 1,
+          borderColor: c.border,
+          padding: 16,
+          marginHorizontal: 16,
+          marginTop: -28,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 4 },
+          shadowOpacity: darkMode ? 0.30 : 0.10,
+          shadowRadius: 12,
+          elevation: 6,
+        }}>
+          <MacroBar label="Protein" consumed={dayTotals.protein} goal={GOALS.protein} unit="g" color={c.protein} c={c} />
+          <View style={{ width: 1, backgroundColor: c.border, marginHorizontal: 4 }} />
+          <MacroBar label="Carbs"   consumed={dayTotals.carbs}   goal={GOALS.carbs}   unit="g" color={c.carbs}   c={c} />
+          <View style={{ width: 1, backgroundColor: c.border, marginHorizontal: 4 }} />
+          <MacroBar label="Fat"     consumed={dayTotals.fat}     goal={GOALS.fat}     unit="g" color={c.fat}     c={c} />
+        </View>
 
-          {/* AI Insight — only show for today */}
+        {/* ══ CONTENT BELOW GRADIENT ═════════════════════════════════════════ */}
+        <View style={{ paddingHorizontal: 16, paddingTop: 16 }}>
+
           {isToday && (
             <AIInsightBanner totals={dayTotals} goals={GOALS} c={c} />
           )}
 
-          {/* Meals section */}
           <Text style={{ fontSize: 18, fontWeight: '700', color: c.white, marginBottom: 12 }}>
             {isToday ? 'Recent Meals' : 'Meals Logged'}
           </Text>

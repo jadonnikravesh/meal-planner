@@ -10,7 +10,9 @@ import Svg, {
   LinearGradient as SvgLinearGradient, Stop,
   Text as SvgText,
 } from 'react-native-svg';
-import { useTheme } from '../context/AppContext';
+import { useTheme, useApp } from '../context/AppContext';
+import { useMealContext } from '../context/MealContext';
+import { getTodayKey, getDateKey, computeStreak } from '../utils/nutrition';
 
 // ─── Chart constants ───────────────────────────────────────────────────────────
 const CHART_H  = 192;
@@ -214,7 +216,7 @@ const makeStyles = (c) => StyleSheet.create({
 function GoalProgressChart({ s }) {
   const c = useTheme();
   const [duration,   setDuration]   = useState('90 Days');
-  const [metric,     setMetric]     = useState('weight');
+  const [metric,     setMetric]     = useState('calories');
   const [chartWidth, setChartWidth] = useState(320);
   const [tooltip,    setTooltip]    = useState(null);
 
@@ -294,22 +296,6 @@ function GoalProgressChart({ s }) {
         ))}
       </View>
 
-      <View style={s.metricToggle}>
-        {[
-          { key: 'weight',   label: 'Weight (lbs)', icon: 'scale-outline' },
-          { key: 'calories', label: 'Calories',      icon: 'flame-outline' },
-        ].map((m) => (
-          <TouchableOpacity
-            key={m.key}
-            style={[s.metricBtn, metric === m.key && { backgroundColor: lineColor + '22', borderColor: lineColor + '66' }]}
-            onPress={() => { setMetric(m.key); setTooltip(null); }}
-            activeOpacity={0.7}
-          >
-            <Ionicons name={m.icon} size={13} color={metric === m.key ? lineColor : c.muted} />
-            <Text style={[s.metricText, metric === m.key && { color: lineColor }]}>{m.label}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
 
       <View style={s.chartContainer} onLayout={onLayout}>
         <Svg width={chartWidth} height={CHART_H}>
@@ -410,18 +396,50 @@ export default function AnalyticsScreen() {
   const c = useTheme();
   const s = useMemo(() => makeStyles(c), [c]);
 
+  const { state }                                    = useApp();
+  const { totals: liveTotals }                       = useMealContext();
+  const dailyLogs                                    = state.dailyLogs  || {};
+  const profile                                      = state.userProfile || {};
+  const calorieGoal                                  = profile.calorieTarget || 2000;
+
+  // ── Derived stats from last 7 days ─────────────────────────────────────────
+  const { avgCalories, daysOnTrack } = useMemo(() => {
+    const today = new Date();
+    let totalCal = 0;
+    let loggedDays = 0;
+    let onTrack = 0;
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - i);
+      const key = getDateKey(d);
+      const log = dailyLogs[key];
+      const cal = log?.calories ?? 0;
+      if (cal > 0) {
+        totalCal += cal;
+        loggedDays++;
+        if (cal <= calorieGoal) onTrack++;
+      }
+    }
+    return {
+      avgCalories: loggedDays > 0 ? Math.round(totalCal / loggedDays) : 0,
+      daysOnTrack: onTrack,
+    };
+  }, [dailyLogs, calorieGoal]);
+
+  const streak = useMemo(() => computeStreak(dailyLogs), [dailyLogs]);
+
   const MACROS = useMemo(() => [
-    { label: 'Protein', grams: 128, goal: 185, color: c.protein },
-    { label: 'Carbs',   grams: 210, goal: 250, color: c.carbs   },
-    { label: 'Fat',     grams:  62, goal:  80, color: c.fat     },
-  ], [c]);
+    { label: 'Protein', grams: Math.round(liveTotals.protein), goal: profile.proteinTarget || 150, color: c.protein },
+    { label: 'Carbs',   grams: Math.round(liveTotals.carbs),   goal: profile.carbTarget    || 225, color: c.carbs   },
+    { label: 'Fat',     grams: Math.round(liveTotals.fat),     goal: profile.fatTarget     || 56,  color: c.fat     },
+  ], [liveTotals, profile, c]);
 
   const STATS = useMemo(() => [
-    { label: 'Avg Calories',   value: '2,129', unit: 'kcal', icon: 'flame',            color: c.fire    },
-    { label: 'Calorie Goal',   value: '2,500', unit: 'kcal', icon: 'flag',             color: c.accent  },
-    { label: 'Days on Track',  value: '5',     unit: 'of 7', icon: 'checkmark-circle', color: c.green   },
-    { label: 'Current Streak', value: '15',    unit: 'days', icon: 'trending-up',      color: c.fat     },
-  ], [c]);
+    { label: 'Avg Calories',   value: avgCalories > 0 ? avgCalories.toLocaleString() : '—', unit: 'kcal', icon: 'flame',            color: c.fire    },
+    { label: 'Calorie Goal',   value: calorieGoal.toLocaleString(),                          unit: 'kcal', icon: 'flag',             color: c.accent  },
+    { label: 'Days on Track',  value: String(daysOnTrack),                                   unit: 'of 7', icon: 'checkmark-circle', color: c.green   },
+    { label: 'Current Streak', value: String(streak),                                        unit: 'days', icon: 'trending-up',      color: c.fat     },
+  ], [avgCalories, calorieGoal, daysOnTrack, streak, c]);
 
   return (
     <SafeAreaView style={s.safe}>

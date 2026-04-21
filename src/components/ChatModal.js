@@ -9,6 +9,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { isFoodLog, parseFoodMessage, formatTime } from '../utils/foodParser';
 import { useMealContext } from '../context/MealContext';
 import { useVoiceInput } from '../hooks/useVoiceInput';
+import { getCorrection, saveCorrection, applyCorrections } from '../utils/imageCorrections';
+import { getTodayKey } from '../utils/nutrition';
+import ImageFeedbackModal from './ImageFeedbackModal';
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
 const BG        = '#0E0E14';
@@ -105,23 +108,98 @@ function MacroStat({ icon, color, label, value }) {
 }
 
 /** Full meal-log card shown inside an AI bubble after a food is logged. */
-function MealLogCard({ items, total, primaryUri, fallbackColor }) {
+function MealLogCard({ items, total, primaryUri, fallbackColor, mealId, onImageTap }) {
+  // Local correction state — loaded once on mount, updated optimistically on user action
+  const [uriOverrides, setUriOverrides] = useState({}); // { foodKey: uri|null }
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadStoredCorrections() {
+      const overrides = {};
+      for (const item of items) {
+        if (!item.foodKey) continue;
+        const corr = await getCorrection(item.foodKey);
+        if (corr) {
+          overrides[item.foodKey] = corr.status === 'rejected' ? null : (corr.uri ?? item.imageUrl);
+        }
+      }
+      if (!cancelled) setUriOverrides(overrides);
+    }
+    loadStoredCorrections();
+    return () => { cancelled = true; };
+  }, []); // intentionally run once per card
+
+  const getEffectiveUri = (item) => {
+    if (item.foodKey && Object.prototype.hasOwnProperty.call(uriOverrides, item.foodKey)) {
+      return uriOverrides[item.foodKey]; // may be null (rejected)
+    }
+    return item.imageUrl ?? null;
+  };
+
+  const getConfidence = (item) => {
+    if (item.foodKey && Object.prototype.hasOwnProperty.call(uriOverrides, item.foodKey)) {
+      return uriOverrides[item.foodKey] === null ? 'none' : 'high';
+    }
+    return item.imageConfidence ?? 'low';
+  };
+
+  const primary          = items[0];
+  const primaryEffUri    = getEffectiveUri(primary);
+  const primaryConfidence = getConfidence(primary);
+
   const mealLabel =
     items.length === 1
       ? items[0].name
       : items.slice(0, 2).map((i) => i.name).join(' & ') +
         (items.length > 2 ? ` +${items.length - 2}` : '');
 
+  const handleImageTap = () => {
+    onImageTap({
+      item:       { ...primary, imageUrl: primary.imageUrl ?? null },
+      mealId,
+      currentUri: primaryEffUri,
+      applyLocal: (foodKey, newUri) => {
+        setUriOverrides((prev) => ({ ...prev, [foodKey]: newUri }));
+      },
+    });
+  };
+
   return (
     <View style={s.mealCard}>
 
       {/* ── Image + summary ── */}
       <View style={s.mealCardTop}>
-        <Image
-          source={{ uri: primaryUri }}
-          style={[s.mealCardImg, { backgroundColor: fallbackColor }]}
-          resizeMode="cover"
-        />
+
+        {/* Tappable image with confidence badge */}
+        <TouchableOpacity
+          onPress={handleImageTap}
+          activeOpacity={0.82}
+          style={s.mealCardImgWrap}
+        >
+          {primaryEffUri ? (
+            <Image
+              source={{ uri: primaryEffUri }}
+              style={[s.mealCardImg, { backgroundColor: fallbackColor }]}
+              resizeMode="cover"
+            />
+          ) : (
+            <View style={[s.mealCardImg, s.mealCardImgPlaceholder, { backgroundColor: fallbackColor || CARD2 }]}>
+              <Ionicons name="restaurant-outline" size={26} color={MUTED} />
+            </View>
+          )}
+
+          {/* Confidence badge — bottom-right corner of the image */}
+          {primaryConfidence !== 'none' && (
+            <View style={[s.confBadge, primaryConfidence === 'high' ? s.confBadgeGreen : s.confBadgeAmber]}>
+              <Ionicons
+                name={primaryConfidence === 'high' ? 'checkmark' : 'help'}
+                size={8}
+                color="#FFF"
+              />
+            </View>
+          )}
+        </TouchableOpacity>
+
         <View style={s.mealCardInfo}>
           <Text style={s.mealCardName} numberOfLines={2}>{mealLabel}</Text>
           <View style={s.mealCardCalRow}>
@@ -164,6 +242,7 @@ function MealLogCard({ items, total, primaryUri, fallbackColor }) {
       <View style={s.mealCardFooter}>
         <Ionicons name="checkmark-circle" size={14} color={GREEN} />
         <Text style={s.mealCardFooterText}>Logged to your dashboard</Text>
+        <Text style={s.mealCardFooterTap}>  ·  Tap image to verify</Text>
       </View>
     </View>
   );
@@ -258,17 +337,18 @@ const GREETING = {
   id: 0,
   role: 'ai',
   text:
-    "Hi! I'm your FitChat AI Food Assistant 🤖\n\n" +
+    "Hi! I'm your FoodChat AI Food Assistant 🤖\n\n" +
     "Tell me what you ate — like \"I had 3 eggs and a bowl of oatmeal\" — and I'll log the full calories and macros to your dashboard automatically.\n\n" +
     "Tap the 🎤 mic in the bottom nav to speak your meal!",
 };
 
 export default function ChatModal({ visible, onClose, startWithVoice = false }) {
-  const { addMeal } = useMealContext();
+  const { addMeal, updateMeal } = useMealContext();
 
-  const [messages, setMessages] = useState([GREETING]);
-  const [input,    setInput]    = useState('');
-  const [typing,   setTyping]   = useState(false);
+  const [messages,      setMessages]      = useState([GREETING]);
+  const [input,         setInput]         = useState('');
+  const [typing,        setTyping]        = useState(false);
+  const [feedbackState, setFeedbackState] = useState(null); // { item, mealId, currentUri }
 
   const scrollRef = useRef(null);
   const timerRef  = useRef(null);
@@ -312,6 +392,21 @@ export default function ChatModal({ visible, onClose, startWithVoice = false }) 
     else             startListening();
   };
 
+  // ── Image feedback handler ────────────────────────────────────────────────
+  const handleFeedback = async (selectedUri) => {
+    const { item, mealId } = feedbackState;
+    if (item.foodKey) {
+      await saveCorrection(item.foodKey, { uri: selectedUri, status: 'replaced' });
+    }
+    // Update the image on the card optimistically
+    feedbackState.applyLocal?.(item.foodKey, selectedUri);
+    // Propagate URI change to the stored meal so HomeScreen reflects it
+    if (mealId) {
+      updateMeal({ id: mealId, uri: selectedUri ?? null }, getTodayKey());
+    }
+    setFeedbackState(null);
+  };
+
   // ── Core send logic (accepts text directly for voice path) ───────────────
   const dispatchSend = (text) => {
     const trimmed = (text ?? input).trim();
@@ -322,13 +417,13 @@ export default function ChatModal({ visible, onClose, startWithVoice = false }) 
     setMessages((prev) => [...prev, userMsg]);
     setTyping(true);
 
-    timerRef.current = setTimeout(() => {
+    timerRef.current = setTimeout(async () => {
       setTyping(false);
 
       if (isFoodLog(trimmed)) {
-        const { items, total } = parseFoodMessage(trimmed);
+        const { items: rawItems, total } = parseFoodMessage(trimmed);
 
-        if (items.length === 0) {
+        if (rawItems.length === 0) {
           setMessages((prev) => [...prev, {
             id: Date.now() + 1, role: 'ai',
             text: "I detected a food log, but couldn't identify specific items. Try being more specific — e.g. \"I had 3 eggs and a cup of oatmeal\".",
@@ -336,24 +431,37 @@ export default function ChatModal({ visible, onClose, startWithVoice = false }) 
           return;
         }
 
+        // Apply any stored user corrections before logging
+        const items  = await applyCorrections(rawItems);
         const primary = items[0];
+        const mealId  = Date.now() + 1;
+
         addMeal({
-          id:            Date.now() + 1,
+          id:            mealId,
           name:          items.length === 1 ? primary.name : items.map((i) => i.name).join(' & '),
           time:          formatTime(),
           kcal:          total.calories,
           protein:       total.protein,
           carbs:         total.carbs,
           fat:           total.fat,
-          uri:           primary.imageUrl,
+          uri:           primary.imageUrl ?? null,
           fallbackColor: primary.color,
+          ingredients:   items.map((item, idx) => ({
+            id:         `${mealId}_${idx}_${item.name.toLowerCase().replace(/\s+/g, '_')}`,
+            name:       item.name,
+            grams:      item.grams,
+            cal100:     item.cal100,
+            protein100: item.protein100,
+            carbs100:   item.carbs100,
+            fat100:     item.fat100,
+          })),
         });
 
         setMessages((prev) => [...prev, {
           id:       Date.now() + 1,
           role:     'ai',
           text:     "Got it! Here's what I logged:",
-          mealData: { items, total, primaryUri: primary.imageUrl, fallbackColor: primary.color },
+          mealData: { items, total, primaryUri: primary.imageUrl, fallbackColor: primary.color, mealId },
         }]);
 
       } else {
@@ -421,6 +529,8 @@ export default function ChatModal({ visible, onClose, startWithVoice = false }) 
                       total={msg.mealData.total}
                       primaryUri={msg.mealData.primaryUri}
                       fallbackColor={msg.mealData.fallbackColor}
+                      mealId={msg.mealData.mealId}
+                      onImageTap={(data) => setFeedbackState(data)}
                     />
                   )}
                 </View>
@@ -479,6 +589,17 @@ export default function ChatModal({ visible, onClose, startWithVoice = false }) 
             </TouchableOpacity>
           </View>
         </KeyboardAvoidingView>
+
+        {/* ── Image feedback modal ── */}
+        {feedbackState && (
+          <ImageFeedbackModal
+            visible={!!feedbackState}
+            item={feedbackState.item}
+            currentUri={feedbackState.currentUri}
+            onSelect={handleFeedback}
+            onClose={() => setFeedbackState(null)}
+          />
+        )}
 
       </SafeAreaView>
     </Modal>
@@ -549,8 +670,16 @@ const s = StyleSheet.create({
   mealCardItemCal:     { fontSize: 12, fontWeight: '600', color: WHITE },
   mealCardItemMacros:  { fontSize: 10, color: MUTED },
 
+  // Image wrap + confidence badge
+  mealCardImgWrap:      { position: 'relative', flexShrink: 0 },
+  mealCardImgPlaceholder: { justifyContent: 'center', alignItems: 'center' },
+  confBadge:            { position: 'absolute', bottom: 4, right: 4, width: 16, height: 16, borderRadius: 8, justifyContent: 'center', alignItems: 'center', borderWidth: 1.5, borderColor: CARD2 },
+  confBadgeGreen:       { backgroundColor: GREEN },
+  confBadgeAmber:       { backgroundColor: '#F59E0B' },
+
   mealCardFooter:      { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: GREEN_DIM, paddingHorizontal: 12, paddingVertical: 8, borderTopWidth: 1, borderTopColor: GREEN + '22' },
   mealCardFooterText:  { fontSize: 12, color: GREEN, fontWeight: '600' },
+  mealCardFooterTap:   { fontSize: 12, color: MUTED },
 
   // ── Recording status bar ──────────────────────────────────────────────────
   recordingBar:      { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: RED_DIM, paddingHorizontal: 18, paddingVertical: 8, borderTopWidth: 1, borderTopColor: RED + '33' },

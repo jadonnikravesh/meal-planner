@@ -74,20 +74,20 @@ export default function TermsOfServiceScreen({ visible, onClose }) {
               <Ionicons name="shield-checkmark-outline" size={22} color={c.accent} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={{ fontSize: 15, fontWeight: '700', color: c.white }}>FitChat AI — Terms of Service</Text>
+              <Text style={{ fontSize: 15, fontWeight: '700', color: c.white }}>FoodChat AI — Terms of Service</Text>
               <Text style={{ fontSize: 12, color: c.muted, marginTop: 2 }}>Last updated: {LAST_UPDATED}</Text>
             </View>
           </View>
 
           <Section title="1. Acceptance of Terms" c={c}>
             <Body c={c}>
-              By downloading, installing, or using FitChat AI, you agree to be bound by these Terms of Service. If you do not agree to these terms, please do not use the app.
+              By downloading, installing, or using FoodChat AI, you agree to be bound by these Terms of Service. If you do not agree to these terms, please do not use the app.
             </Body>
           </Section>
 
-          <Section title="2. About FitChat AI" c={c}>
+          <Section title="2. About FoodChat AI" c={c}>
             <Body c={c}>
-              FitChat AI is a nutrition tracking application that uses artificial intelligence to help you log meals, track macros, and work toward your personal health goals. The app provides:
+              FoodChat AI is a nutrition tracking application that uses artificial intelligence to help you log meals, track macros, and work toward your personal health goals. The app provides:
             </Body>
             <Bullet text="AI-powered meal and calorie tracking" c={c} />
             <Bullet text="Personalized macro and water intake targets" c={c} />
@@ -97,19 +97,19 @@ export default function TermsOfServiceScreen({ visible, onClose }) {
 
           <Section title="3. Not Medical Advice" c={c}>
             <Body c={c}>
-              FitChat AI is a wellness and tracking tool — it is NOT a medical service. Everything the app provides, including calorie targets, macro recommendations, and AI chat responses, is for general informational and motivational purposes only.
+              FoodChat AI is a wellness and tracking tool — it is NOT a medical service. Everything the app provides, including calorie targets, macro recommendations, and AI chat responses, is for general informational and motivational purposes only.
             </Body>
             <View style={{ marginTop: 12, backgroundColor: c.card, borderRadius: 12, borderWidth: 1, borderLeftWidth: 3, borderColor: c.border, borderLeftColor: c.red, padding: 14 }}>
               <Text style={{ fontSize: 13, fontWeight: '700', color: c.white, marginBottom: 4 }}>Important Disclaimer</Text>
               <Text style={{ fontSize: 13, color: c.muted, lineHeight: 20 }}>
-                Nothing in FitChat AI constitutes medical advice, diagnosis, or treatment. Always consult a qualified healthcare professional before making significant changes to your diet, exercise routine, or health plan. Do not use this app as a substitute for professional medical guidance.
+                Nothing in FoodChat AI constitutes medical advice, diagnosis, or treatment. Always consult a qualified healthcare professional before making significant changes to your diet, exercise routine, or health plan. Do not use this app as a substitute for professional medical guidance.
               </Text>
             </View>
           </Section>
 
           <Section title="4. User Responsibilities" c={c}>
             <Body c={c}>
-              By using FitChat AI, you agree to:
+              By using FoodChat AI, you agree to:
             </Body>
             <Bullet text="Provide accurate personal information (age, weight, height, goals) for best results" c={c} />
             <Bullet text="Use the app for personal, non-commercial purposes only" c={c} />
@@ -120,25 +120,25 @@ export default function TermsOfServiceScreen({ visible, onClose }) {
 
           <Section title="5. Account and Access" c={c}>
             <Body c={c}>
-              You must create an account to use FitChat AI. You are responsible for all activity under your account. We reserve the right to suspend or terminate accounts that violate these terms, engage in fraudulent activity, or misuse the AI systems.
+              You must create an account to use FoodChat AI. You are responsible for all activity under your account. We reserve the right to suspend or terminate accounts that violate these terms, engage in fraudulent activity, or misuse the AI systems.
             </Body>
           </Section>
 
           <Section title="6. AI-Generated Content" c={c}>
             <Body c={c}>
-              FitChat AI uses large language model AI to generate nutrition guidance and meal suggestions. AI responses may occasionally be inaccurate, incomplete, or not suited to your specific health needs. We do not guarantee the accuracy of any AI-generated content. Always use your own judgment.
+              FoodChat AI uses large language model AI to generate nutrition guidance and meal suggestions. AI responses may occasionally be inaccurate, incomplete, or not suited to your specific health needs. We do not guarantee the accuracy of any AI-generated content. Always use your own judgment.
             </Body>
           </Section>
 
           <Section title="7. Intellectual Property" c={c}>
             <Body c={c}>
-              All content, design, branding, and code in FitChat AI is owned by or licensed to FitChat AI. You may not copy, redistribute, or create derivative works from any part of the app without prior written permission.
+              All content, design, branding, and code in FoodChat AI is owned by or licensed to FoodChat AI. You may not copy, redistribute, or create derivative works from any part of the app without prior written permission.
             </Body>
           </Section>
 
           <Section title="8. Limitation of Liability" c={c}>
             <Body c={c}>
-              To the maximum extent permitted by law, FitChat AI and its developers shall not be liable for any indirect, incidental, or consequential damages arising from your use of the app — including but not limited to health outcomes, data loss, or reliance on AI-generated recommendations.
+              To the maximum extent permitted by law, FoodChat AI and its developers shall not be liable for any indirect, incidental, or consequential damages arising from your use of the app — including but not limited to health outcomes, data loss, or reliance on AI-generated recommendations.
             </Body>
           </Section>
 

@@ -1,7 +1,7 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useContext, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, ActivityIndicator,
-  StyleSheet, Animated,
+  StyleSheet, Animated, Dimensions,
 } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -18,13 +18,21 @@ import SignUpScreen       from './src/screens/SignUpScreen';
 import OnboardingScreen  from './src/screens/OnboardingScreen';
 import MealLogOverlay  from './src/components/MealLogOverlay';
 
-import { MealContextProvider }               from './src/context/MealContext';
+import { MealContextProvider, useMealContext } from './src/context/MealContext';
 import { AppProvider, useApp, useTheme }     from './src/context/AppContext';
 import { AuthProvider, useAuth }             from './src/context/AuthContext';
 import { MealOverlayContext }                from './src/context/OverlayContext';
 import { TtsProvider, useTts }               from './src/context/TtsContext';
 import { useVoiceInput }                     from './src/hooks/useVoiceInput';
 import { useNotifications }                  from './src/notifications/NotificationManager';
+import WeightReviewModal                     from './src/components/WeightReviewModal';
+import PaywallScreen                         from './src/screens/PaywallScreen';
+import { REVIEW_MODE }                       from './src/config/reviewMode';
+import { estimateWeeklyWeightChange, isWeeklyReviewDue } from './src/utils/weightEstimation';
+import { getTodayKey }                       from './src/utils/nutrition';
+import { getOrFetchFoodImage, getFoodColor } from './src/utils/imageService';
+import { speakWithElevenLabs }               from './src/utils/ttsService';
+import { computeFoodPreferences }            from './src/utils/foodPreferences';
 
 const Tab = createBottomTabNavigator();
 
@@ -38,11 +46,24 @@ const RIGHT_TABS = [
   { name: 'Settings', icon: 'settings-outline',  iconFocused: 'settings' },
 ];
 
+const BACKEND_URL = 'http://localhost:3001';
+
 // ─── Floating tab bar with built-in voice mic ─────────────────────────────────
 function FloatingTabBar({ state, navigation }) {
-  const c                     = useTheme();
-  const insets                = useSafeAreaInsets();
-  const { isSpeaking, stop }  = useTts();
+  const c                                      = useTheme();
+  const insets                                 = useSafeAreaInsets();
+  const { isSpeaking, stop, markSpeaking, markStopped } = useTts();
+  const { state: appState, dispatch }          = useApp();
+  const { addMeal }                            = useMealContext();
+  const showOverlay                            = useContext(MealOverlayContext);
+
+  const [processing, setProcessing] = useState(false);
+
+  // Recency-weighted preference list — recomputes only when logs change
+  const foodPreferences = useMemo(
+    () => computeFoodPreferences(appState.dailyLogs),
+    [appState.dailyLogs],
+  );
 
   // Pulsating rings for the mic FAB
   const ring1    = useRef(new Animated.Value(1)).current;
@@ -86,13 +107,109 @@ function FloatingTabBar({ state, navigation }) {
     ring2.setValue(1); ring2Opa.setValue(0);
   };
 
-  // ── Voice result → navigate to Helper and auto-send ───────────────────────
-  const handleVoiceResult = (text) => {
+  // ── Voice result — process in-place, never navigate ───────────────────────
+  const handleVoiceResult = useCallback(async (text) => {
     if (!text?.trim()) return;
-    // Route through HelperScreen: it handles TTS, chat display, meal logging,
-    // and triggers the overlay via MealOverlayContext.
-    navigation.navigate('Helper', { preset: text.trim(), presetKey: Date.now() });
-  };
+    const trimmed = text.trim();
+
+    // Immediately add the user message to shared chat history (HelperScreen syncs this)
+    const userMsgId = `msg_${Date.now()}_u`;
+    dispatch({ type: 'ADD_CHAT_MESSAGE', payload: { id: userMsgId, role: 'user', text: trimmed } });
+
+    setProcessing(true);
+    try {
+      const today     = getTodayKey();
+      const todayLog  = appState.dailyLogs?.[today] || {};
+      const profileForAI = {
+        ...appState.userProfile,
+        loggedCalories: todayLog.calories || 0,
+        loggedProtein:  todayLog.protein  || 0,
+        loggedCarbs:    todayLog.carbs    || 0,
+        loggedFat:      todayLog.fat      || 0,
+      };
+      // Use shared chat history for context (last 20 turns)
+      const historyForApi = appState.chatMessages.slice(-20).map((m) => ({
+        role:    m.role === 'user' ? 'user' : 'assistant',
+        content: m.text,
+      }));
+
+      const res = await fetch(`${BACKEND_URL}/chat`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: trimmed, history: historyForApi, userProfile: profileForAI, foodPreferences }),
+      });
+      if (!res.ok) throw new Error(`Server error ${res.status}`);
+      const data = await res.json();
+
+      // Speak the AI response
+      if (appState.settings.voiceEnabled !== false && data.reply) {
+        speakWithElevenLabs(data.reply, { onStart: markSpeaking, onEnd: markStopped });
+      }
+
+      const validMeal = data.mealLogged && data.meal?.logged === true
+                     && data.meal?.name && (data.meal?.calories ?? 0) > 0;
+
+      let aiPayload = {
+        id:   `msg_${Date.now()}_a`,
+        role: 'ai',
+        text: data.reply || 'Logged!',
+      };
+
+      if (validMeal) {
+        const m = data.meal;
+        const { uri: finalUri, confidence } = await getOrFetchFoodImage(m.name);
+        const imgColor    = getFoodColor(m.imageKey || m.name);
+        const foodVerified = confidence === 'verified';
+
+        // Log to MealContext + AppContext (same path as HelperScreen)
+        addMeal({
+          id:          `meal_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          name:        m.name,
+          time:        new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          kcal:        m.calories,
+          protein:     m.protein,
+          carbs:       m.carbs,
+          fat:         m.fat,
+          uri:         finalUri,
+          fallbackColor: imgColor,
+        });
+
+        // Show the overlay on whatever screen is currently visible
+        showOverlay({
+          name:     m.name,    calories: m.calories,
+          protein:  m.protein, carbs:    m.carbs,
+          fat:      m.fat,     imageUrl: finalUri,
+          reply:    data.reply,
+        });
+
+        // Attach mealData so HelperScreen renders the full meal card
+        const items = [{ name: m.name, calories: m.calories, protein: m.protein, carbs: m.carbs, fat: m.fat, grams: 0 }];
+        const total = { calories: m.calories, protein: m.protein, carbs: m.carbs, fat: m.fat };
+        aiPayload = {
+          ...aiPayload,
+          mealData: { items, total, primaryUri: finalUri, fallbackColor: imgColor, imageConfidence: confidence, voteStats: {} },
+        };
+      }
+
+      dispatch({ type: 'ADD_CHAT_MESSAGE', payload: aiPayload });
+
+    } catch (err) {
+      console.error('[tab-mic error]', err.message);
+      const isOffline = err.message.includes('Failed to fetch') || err.message.includes('Network');
+      dispatch({
+        type: 'ADD_CHAT_MESSAGE',
+        payload: {
+          id:   `msg_${Date.now()}_err`,
+          role: 'ai',
+          text: isOffline
+            ? '⚠️ Backend not running. Start it with: cd backend && npm start'
+            : `⚠️ Error: ${err.message}`,
+        },
+      });
+    } finally {
+      setProcessing(false);
+    }
+  }, [appState, dispatch, addMeal, showOverlay, markSpeaking, markStopped]);
 
   const { isListening, isSupported, startListening, stopListening } =
     useVoiceInput({ onResult: handleVoiceResult });
@@ -103,7 +220,7 @@ function FloatingTabBar({ state, navigation }) {
   }, [isListening]);
 
   const handleMicPress = () => {
-    if (!isSupported) return;
+    if (!isSupported || processing) return;
     if (isListening) stopListening();
     else             startListening();
   };
@@ -112,7 +229,7 @@ function FloatingTabBar({ state, navigation }) {
   const currentRoute = state.routes[state.index].name;
   const goTo = (name) => navigation.navigate(name);
 
-  const micColor = isListening ? c.red : c.accent;
+  const micColor = isListening ? c.red : processing ? c.tabInactive : c.accent;
 
   const TabBtn = ({ tab }) => {
     const focused = currentRoute === tab.name;
@@ -142,12 +259,18 @@ function FloatingTabBar({ state, navigation }) {
             onPress={handleMicPress}
             activeOpacity={0.85}
           >
-            <Ionicons name={isListening ? 'mic' : 'mic-outline'} size={26} color="#FFF" />
+            {processing
+              ? <ActivityIndicator size="small" color="#FFF" />
+              : <Ionicons name={isListening ? 'mic' : 'mic-outline'} size={26} color="#FFF" />
+            }
           </TouchableOpacity>
 
-          {/* "Listening" label below FAB */}
-          {isListening && (
+          {/* Status label below FAB */}
+          {isListening && !processing && (
             <Text style={[s.listenLabel, { color: c.red }]}>Listening…</Text>
+          )}
+          {processing && (
+            <Text style={[s.listenLabel, { color: c.accent }]}>Thinking…</Text>
           )}
 
           {/* Stop TTS button — floats above-right of mic while AI is speaking */}
@@ -265,33 +388,68 @@ function NotificationSetup() {
 
 // ─── Main tab navigator ───────────────────────────────────────────────────────
 function AppNavigator() {
-  const c = useTheme();
-  const [overlayMeal, setOverlayMeal] = useState(null);
+  const c                   = useTheme();
+  const { state, dispatch } = useApp();
+  const [overlayMeal,      setOverlayMeal]      = useState(null);
+  const [weeklyReviewData, setWeeklyReviewData] = useState(null);
   const showOverlay = useCallback((meal) => setOverlayMeal(meal), []);
+
+  // ── Weekly weight review check ──────────────────────────────────────────────
+  // Runs whenever daily logs or lastReviewedDate change. Opens the modal at most
+  // once per week and only when there are ≥ 3 days of tracked data.
+  useEffect(() => {
+    if (weeklyReviewData) return; // modal already open — don't re-trigger
+    const lastDate = state.weeklyReview?.lastReviewedDate ?? null;
+    if (!isWeeklyReviewDue(lastDate)) return;
+    const data = estimateWeeklyWeightChange(state.dailyLogs, state.userProfile);
+    if (data) setWeeklyReviewData(data);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.dailyLogs, state.weeklyReview?.lastReviewedDate]);
+
+  const handleWeightSave = useCallback((weight) => {
+    dispatch({ type: 'SAVE_WEIGHT_UPDATE', payload: { weight, date: getTodayKey() } });
+    setWeeklyReviewData(null);
+  }, [dispatch]);
+
+  const handleWeightDismiss = useCallback(() => {
+    dispatch({ type: 'DISMISS_WEEKLY_REVIEW', payload: getTodayKey() });
+    setWeeklyReviewData(null);
+  }, [dispatch]);
 
   return (
     <TtsProvider>
     <MealOverlayContext.Provider value={showOverlay}>
-      <NotificationSetup />
-      <StatusBar style={c.statusBar} backgroundColor={c.bg} />
-      <NavigationContainer>
-        <Tab.Navigator
-          tabBar={(props) => <FloatingTabBar {...props} />}
-          screenOptions={{ headerShown: false }}
-        >
-          <Tab.Screen name="Home"      component={HomeScreen} />
-          <Tab.Screen name="Helper"    component={HelperScreen} />
-          <Tab.Screen name="Analytics" component={AnalyticsScreen} />
-          <Tab.Screen name="Settings"  component={SettingsScreen} />
-        </Tab.Navigator>
-      </NavigationContainer>
+      {/* Root View gives absoluteFillObject a reliable full-screen anchor */}
+      <View style={{ flex: 1 }}>
+        <NotificationSetup />
+        <StatusBar style={c.statusBar} backgroundColor={c.bg} />
+        <NavigationContainer>
+          <Tab.Navigator
+            tabBar={(props) => <FloatingTabBar {...props} />}
+            screenOptions={{ headerShown: false }}
+          >
+            <Tab.Screen name="Home"      component={HomeScreen} />
+            <Tab.Screen name="Helper"    component={HelperScreen} />
+            <Tab.Screen name="Analytics" component={AnalyticsScreen} />
+            <Tab.Screen name="Settings"  component={SettingsScreen} />
+          </Tab.Navigator>
+        </NavigationContainer>
 
-      {/* Meal log overlay — renders above everything including the tab bar */}
-      <MealLogOverlay
-        visible={!!overlayMeal}
-        meal={overlayMeal}
-        onClose={() => setOverlayMeal(null)}
-      />
+        {/* Meal log overlay — renders above everything including the tab bar */}
+        <MealLogOverlay
+          visible={!!overlayMeal}
+          meal={overlayMeal}
+          onClose={() => setOverlayMeal(null)}
+        />
+
+        {/* Weekly weight check-in — renders above everything */}
+        <WeightReviewModal
+          visible={!!weeklyReviewData}
+          reviewData={weeklyReviewData}
+          onSave={handleWeightSave}
+          onDismiss={handleWeightDismiss}
+        />
+      </View>
     </MealOverlayContext.Provider>
     </TtsProvider>
   );
@@ -327,8 +485,14 @@ function RootNavigator() {
     );
   }
 
-  if (!user)                 return <AuthScreens />;
-  if (!state.isOnboarded)    return <OnboardingScreen />;
+  if (!user)              return <AuthScreens />;
+  if (!state.isOnboarded) return <OnboardingScreen />;
+
+  // Gate: require an active or trialing subscription before showing the app
+  // REVIEW_MODE forces hasSub = false so the paywall always appears for reviewers
+  const hasSub = !REVIEW_MODE && ['trial', 'active', 'lifetime_free'].includes(state.subscription?.status);
+  if (!hasSub)            return <PaywallScreen />;
+
   return <AppNavigator />;
 }
 

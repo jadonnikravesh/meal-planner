@@ -6,7 +6,7 @@
  * `g` is the default serving size used when no quantity is detected.
  */
 
-import { getFoodImageUrl, getFoodColor } from './imageService';
+import { getFoodImageData } from './imageService';
 
 // ─── Food database ────────────────────────────────────────────────────────────
 // { cal, protein, carbs, fat } per 100 g  |  g = default serving in grams
@@ -100,6 +100,92 @@ const DISPLAY_NAMES = {
   peanutbutter:  'Peanut Butter',
   protein_shake: 'Protein Shake',
 };
+
+// ─── Composite food breakdowns ────────────────────────────────────────────────
+// Maps a FOOD_DB key to an array of realistic sub-ingredients.
+// Each entry: { name (display), key (FOOD_DB key), grams }
+
+const COMPOSITE_BREAKDOWN = {
+  burger: [
+    { name: 'Beef Patty',       key: 'beef',   grams: 120 },
+    { name: 'Burger Bun',       key: 'bread',  grams: 60  },
+    { name: 'Cheddar Cheese',   key: 'cheese', grams: 20  },
+    { name: 'Lettuce & Tomato', key: 'salad',  grams: 40  },
+  ],
+  pizza: [
+    { name: 'Pizza Dough',      key: 'bread',   grams: 120 },
+    { name: 'Mozzarella',       key: 'cheese',  grams: 70  },
+    { name: 'Tomato & Toppings',key: 'salad',   grams: 60  },
+  ],
+  sandwich: [
+    { name: 'Bread (2 slices)', key: 'bread',   grams: 80  },
+    { name: 'Chicken Breast',   key: 'chicken', grams: 80  },
+    { name: 'Lettuce & Tomato', key: 'salad',   grams: 30  },
+    { name: 'Cheddar Cheese',   key: 'cheese',  grams: 15  },
+  ],
+  tacos: [
+    { name: 'Corn Tortillas',   key: 'bread',   grams: 60  },
+    { name: 'Ground Beef',      key: 'beef',    grams: 100 },
+    { name: 'Cheddar Cheese',   key: 'cheese',  grams: 20  },
+    { name: 'Salsa & Toppings', key: 'salad',   grams: 50  },
+  ],
+  sushi: [
+    { name: 'Sushi Rice',       key: 'rice',    grams: 150 },
+    { name: 'Salmon',           key: 'salmon',  grams: 80  },
+    { name: 'Nori (seaweed)',   key: 'salad',   grams: 10  },
+  ],
+  soup: [
+    { name: 'Broth Base',       key: 'soup',    grams: 280 },
+    { name: 'Vegetables',       key: 'salad',   grams: 80  },
+    { name: 'Chicken',          key: 'chicken', grams: 60  },
+  ],
+  smoothie: [
+    { name: 'Banana',           key: 'banana',  grams: 120 },
+    { name: 'Mixed Berries',    key: 'apple',   grams: 80  },
+    { name: 'Greek Yogurt',     key: 'yogurt',  grams: 100 },
+    { name: 'Almond Milk',      key: 'milk',    grams: 120 },
+  ],
+  protein_shake: [
+    { name: 'Protein Powder',   key: 'protein_shake', grams: 35  },
+    { name: 'Milk',             key: 'milk',          grams: 250 },
+  ],
+  oatmeal: [
+    { name: 'Rolled Oats',      key: 'oats',    grams: 80  },
+    { name: 'Milk',             key: 'milk',    grams: 150 },
+    { name: 'Banana',           key: 'banana',  grams: 60  },
+  ],
+};
+
+/**
+ * Given a meal name (e.g. "Hamburger", "Pizza"), returns a full ingredient
+ * breakdown array if a composite match is found, otherwise null.
+ */
+export function getIngredientBreakdown(mealName) {
+  const lower = mealName.toLowerCase().trim();
+
+  for (const [key, aliases] of Object.entries(ALIASES)) {
+    const matched = aliases.some((a) => lower.includes(a) || a === lower);
+    if (!matched) continue;
+
+    const breakdown = COMPOSITE_BREAKDOWN[key];
+    if (!breakdown) return null;
+
+    return breakdown.map(({ name, key: bKey, grams }, idx) => {
+      const data = FOOD_DB[bKey];
+      if (!data) return null;
+      return {
+        id:         `bd_${key}_${bKey}_${idx}`,
+        name,
+        grams,
+        cal100:     data.cal,
+        protein100: data.protein,
+        carbs100:   data.carbs,
+        fat100:     data.fat,
+      };
+    }).filter(Boolean);
+  }
+  return null;
+}
 
 // ─── Intent detection ─────────────────────────────────────────────────────────
 
@@ -230,16 +316,25 @@ export function parseFoodMessage(text) {
     const grams   = extractQuantity(text, aliases, data.g) ?? data.g;
     const scale   = grams / 100;
     const display = DISPLAY_NAMES[key] || key.charAt(0).toUpperCase() + key.slice(1);
+    const imgData = getFoodImageData(key);
 
     items.push({
-      name:     display,
+      id:              `${key}_${Date.now()}_${items.length}`,
+      name:            display,
       grams,
-      calories: Math.round(data.cal     * scale),
-      protein:  Math.round(data.protein * scale),
-      carbs:    Math.round(data.carbs   * scale),
-      fat:      Math.round(data.fat     * scale),
-      imageUrl: getFoodImageUrl(key),
-      color:    getFoodColor(key),
+      calories:        Math.round(data.cal     * scale),
+      protein:         Math.round(data.protein * scale),
+      carbs:           Math.round(data.carbs   * scale),
+      fat:             Math.round(data.fat     * scale),
+      // per-100g values for dynamic recalculation in the edit modal
+      cal100:          data.cal,
+      protein100:      data.protein,
+      carbs100:        data.carbs,
+      fat100:          data.fat,
+      imageUrl:        imgData.uri,
+      color:           imgData.color,
+      imageConfidence: imgData.confidence,
+      foodKey:         imgData.foodKey,
     });
   }
 
@@ -254,6 +349,29 @@ export function parseFoodMessage(text) {
   );
 
   return { items, total };
+}
+
+/**
+ * Look up a food by name/alias and return its per-100g macro profile.
+ * Returns null if the food is not in the database.
+ */
+export function lookupIngredient(name) {
+  const lower = name.toLowerCase().trim();
+  for (const [key, data] of Object.entries(FOOD_DB)) {
+    const aliases = ALIASES[key] || [key];
+    if (aliases.some((a) => lower.includes(a) || a.includes(lower))) {
+      const display = DISPLAY_NAMES[key] || key.charAt(0).toUpperCase() + key.slice(1);
+      return {
+        resolvedName: display,
+        cal100:       data.cal,
+        protein100:   data.protein,
+        carbs100:     data.carbs,
+        fat100:       data.fat,
+        defaultGrams: data.g,
+      };
+    }
+  }
+  return null;
 }
 
 /** Formats a Date as "3:45pm" */
