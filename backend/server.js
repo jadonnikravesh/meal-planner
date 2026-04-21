@@ -460,6 +460,9 @@ app.post('/promo/redeem', (req, res) => {
   res.json({ valid: true, plan: entry.plan });
 });
 
+// ─── GET / ────────────────────────────────────────────────────────────────────
+app.get('/', (_req, res) => res.json({ status: 'FoodChat AI backend running' }));
+
 // ─── GET /health ──────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 

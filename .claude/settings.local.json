@@ -16,7 +16,10 @@
       "WebFetch(domain:api.expo.dev)",
       "Bash(python -c \"from PIL import Image; img = Image.open\\('c:/Users/AtlasX/Desktop/Code Stuff/meal-planner/assets/icon.png'\\); print\\(img.size, img.mode\\)\")",
       "Bash(python3 -c \"from PIL import Image; img = Image.open\\('c:/Users/AtlasX/Desktop/Code Stuff/meal-planner/assets/icon.png'\\); print\\(img.size, img.mode\\)\")",
-      "PowerShell(Add-Type -AssemblyName System.Drawing; $img = [System.Drawing.Image]::FromFile\\('C:\\\\Users\\\\AtlasX\\\\Desktop\\\\Code Stuff\\\\meal-planner\\\\assets\\\\icon.png'\\); \"$\\($img.Width\\)x$\\($img.Height\\) $\\($img.PixelFormat\\)\"; $img.Dispose\\(\\))"
+      "PowerShell(Add-Type -AssemblyName System.Drawing; $img = [System.Drawing.Image]::FromFile\\('C:\\\\Users\\\\AtlasX\\\\Desktop\\\\Code Stuff\\\\meal-planner\\\\assets\\\\icon.png'\\); \"$\\($img.Width\\)x$\\($img.Height\\) $\\($img.PixelFormat\\)\"; $img.Dispose\\(\\))",
+      "Bash(cat .gitmodules)",
+      "Bash(git submodule *)",
+      "Bash(node -e \"const p=require\\('./backend/package.json'\\); console.log\\('start:', p.scripts.start\\); console.log\\('engines:', JSON.stringify\\(p.engines\\)\\); console.log\\('deps:', Object.keys\\(p.dependencies\\).join\\(', '\\)\\)\")"
     ]
   }
 }
