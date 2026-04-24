@@ -5,15 +5,21 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import * as InAppPurchases from 'expo-in-app-purchases';
 import { useTheme, useApp } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
-import { REVIEW_MODE } from '../config/reviewMode';
+import { DEV_MODE, isReviewAccount } from '../config/testMode';
 
-const BACKEND_URL = 'http://localhost:3001';
+import { API_BASE_URL } from '../config/api';
 
-// Toggle to true to test UI without hitting the real App Store
+const BACKEND_URL = API_BASE_URL;
+
+// Set true to skip IAP entirely and test the UI with mock state
 const MOCK_MODE = false;
+
+// Apple product IDs — must match exactly what you create in App Store Connect
+// App Store Connect → your app → Subscriptions → create these two products:
+//   com.foodchatai.monthly  (1 month, auto-renewable, $4.99, 14-day intro offer)
+//   com.foodchatai.yearly   (1 year,  auto-renewable, $34.99, 14-day intro offer)
 
 const PRODUCT_IDS = ['com.foodchatai.monthly', 'com.foodchatai.yearly'];
 
@@ -197,8 +203,12 @@ export default function PaywallScreen() {
   const { dispatch } = useApp();
   const { user }     = useAuth();
 
-  const [selectedId,   setSelectedId]   = useState('com.foodchatai.yearly');
-  const [storeReady,   setStoreReady]   = useState(MOCK_MODE);
+  // Runtime flag: true for the test account (Apple reviewer) and in DEV.
+  // Used to bypass real IAP and show developer UI — never true for real users.
+  const isTestAccount = MOCK_MODE || DEV_MODE || isReviewAccount(user);
+
+  const [selectedId,    setSelectedId]    = useState('com.foodchatai.yearly');
+  const [storeReady,    setStoreReady]    = useState(isTestAccount);
   const [storeProducts, setStoreProducts] = useState({});
   const [loading,      setLoading]      = useState(false);
   const [restoring,    setRestoring]    = useState(false);
@@ -210,58 +220,57 @@ export default function PaywallScreen() {
   const [focusedPromo, setFocusedPromo] = useState(false);
 
   const connectedRef = useRef(false);
+  const IAPRef       = useRef(null); // dynamically imported on native only
 
-  // ── App Store connection ──────────────────────────────────────────────────
+  // ── App Store connection (native only — skipped on web and in TEST/MOCK mode) ─
   useEffect(() => {
-    if (MOCK_MODE) return;
+    if (isTestAccount || Platform.OS === 'web') return;
 
     let mounted = true;
 
     const setup = async () => {
-      try {
-        await InAppPurchases.connectAsync();
-        connectedRef.current = true;
+      const IAP = await import('expo-in-app-purchases');
+      IAPRef.current = IAP;
 
-        const { responseCode, results } = await InAppPurchases.getProductsAsync(PRODUCT_IDS);
-        if (
-          mounted &&
-          responseCode === InAppPurchases.IAPResponseCode.OK &&
-          results?.length
-        ) {
-          const map = {};
-          results.forEach((p) => { map[p.productId] = p; });
-          setStoreProducts(map);
-        }
-      } catch {
-        // Store unavailable — mock prices will be shown
-      } finally {
-        if (mounted) setStoreReady(true);
-      }
+      // Register the purchase listener BEFORE connecting so no events are missed
+      IAP.setPurchaseListener(({ responseCode, results }) => {
+        const RC = IAP.IAPResponseCode;
 
-      InAppPurchases.setPurchaseListener(({ responseCode, results }) => {
-        if (responseCode === InAppPurchases.IAPResponseCode.OK && results?.length) {
+        if (responseCode === RC.OK && results?.length) {
           results.forEach(async (purchase) => {
+            // Finish the transaction — false = do NOT consume (correct for subscriptions)
             try {
               if (!purchase.acknowledged) {
-                await InAppPurchases.finishTransactionAsync(purchase, true);
+                await IAP.finishTransactionAsync(purchase, false);
               }
-            } catch { /* non-fatal */ }
+            } catch { /* non-fatal — Apple will retry on next launch */ }
 
             const planKey = PLAN_META[purchase.productId]?.key ?? 'monthly';
             dispatch({
               type: 'SET_SUBSCRIPTION',
               payload: {
-                status:         'active',
-                plan:           planKey,
-                subscriptionId: purchase.purchaseToken ?? purchase.transactionId ?? null,
-                customerId:     null,
-                trialEnd:       null,
+                status:           'active',
+                plan:             planKey,
+                subscriptionId:   purchase.transactionId   ?? null,
+                // transactionReceipt is the raw StoreKit receipt for backend validation
+                transactionReceipt: purchase.transactionReceipt ?? null,
+                customerId:       null,
+                trialEnd:         null,
               },
             });
             if (mounted) setLoading(false);
           });
-        } else if (responseCode === InAppPurchases.IAPResponseCode.USER_CANCELED) {
+
+        } else if (responseCode === RC.DEFERRED) {
+          // Ask to Buy — purchase is pending parental approval; not an error
+          if (mounted) {
+            setError("Your purchase is awaiting approval. You'll be notified when it's approved.");
+            setLoading(false);
+          }
+
+        } else if (responseCode === RC.USER_CANCELED) {
           if (mounted) setLoading(false);
+
         } else {
           if (mounted) {
             setError('Purchase failed. Please try again.');
@@ -269,14 +278,30 @@ export default function PaywallScreen() {
           }
         }
       });
+
+      try {
+        await IAP.connectAsync();
+        connectedRef.current = true;
+
+        const { responseCode, results } = await IAP.getProductsAsync(PRODUCT_IDS);
+        if (mounted && responseCode === IAP.IAPResponseCode.OK && results?.length) {
+          const map = {};
+          results.forEach((p) => { map[p.productId] = p; });
+          setStoreProducts(map);
+        }
+      } catch {
+        // Store unavailable — mock prices will be shown, purchase will surface an error
+      } finally {
+        if (mounted) setStoreReady(true);
+      }
     };
 
     setup();
 
     return () => {
       mounted = false;
-      if (connectedRef.current) {
-        InAppPurchases.disconnectAsync().catch(() => {});
+      if (connectedRef.current && IAPRef.current) {
+        IAPRef.current.disconnectAsync().catch(() => {});
         connectedRef.current = false;
       }
     };
@@ -307,7 +332,8 @@ export default function PaywallScreen() {
   const handleSubscribe = async () => {
     setError('');
 
-    if (MOCK_MODE) {
+    // Non-production paths — bypass real IAP
+    if (isTestAccount || Platform.OS === 'web') {
       const planKey = PLAN_META[selectedId]?.key ?? 'monthly';
       dispatch({
         type: 'SET_SUBSCRIPTION',
@@ -316,15 +342,15 @@ export default function PaywallScreen() {
       return;
     }
 
-    if (!storeReady) {
+    if (!storeReady || !IAPRef.current) {
       setError('Still connecting to App Store. Please wait a moment.');
       return;
     }
 
     setLoading(true);
     try {
-      await InAppPurchases.purchaseItemAsync(selectedId);
-      // Result arrives via setPurchaseListener
+      // Triggers the native StoreKit sheet — result arrives via setPurchaseListener
+      await IAPRef.current.purchaseItemAsync(selectedId);
     } catch {
       setError('Could not connect to the App Store. Please try again.');
       setLoading(false);
@@ -333,24 +359,37 @@ export default function PaywallScreen() {
 
   // ── Restore previous purchases ────────────────────────────────────────────
   const handleRestore = async () => {
-    if (MOCK_MODE) { setError('Restore not available in mock mode.'); return; }
+    if (isTestAccount || Platform.OS === 'web' || !IAPRef.current) {
+      setError('Restore is only available on a real device with an active Apple ID.');
+      return;
+    }
     setRestoring(true);
     setError('');
     try {
-      const { responseCode, results } = await InAppPurchases.getPurchaseHistoryAsync();
-      if (responseCode === InAppPurchases.IAPResponseCode.OK && results?.length) {
-        const latest  = results[results.length - 1];
-        const planKey = PLAN_META[latest.productId]?.key ?? 'monthly';
-        dispatch({
-          type: 'SET_SUBSCRIPTION',
-          payload: {
-            status:         'active',
-            plan:           planKey,
-            subscriptionId: latest.purchaseToken ?? latest.transactionId ?? null,
-            customerId:     null,
-            trialEnd:       null,
-          },
-        });
+      const IAP = IAPRef.current;
+      const { responseCode, results } = await IAP.getPurchaseHistoryAsync();
+      if (responseCode === IAP.IAPResponseCode.OK && results?.length) {
+        // Use the most recent subscription purchase
+        const sub = results
+          .filter((p) => PRODUCT_IDS.includes(p.productId))
+          .sort((a, b) => (b.transactionDate ?? 0) - (a.transactionDate ?? 0))[0];
+
+        if (sub) {
+          const planKey = PLAN_META[sub.productId]?.key ?? 'monthly';
+          dispatch({
+            type: 'SET_SUBSCRIPTION',
+            payload: {
+              status:             'active',
+              plan:               planKey,
+              subscriptionId:     sub.transactionId        ?? null,
+              transactionReceipt: sub.transactionReceipt   ?? null,
+              customerId:         null,
+              trialEnd:           null,
+            },
+          });
+        } else {
+          setError('No FoodChat AI subscription found on this Apple ID.');
+        }
       } else {
         setError('No previous purchases found.');
       }
@@ -566,7 +605,7 @@ export default function PaywallScreen() {
               style={[s.ctaBtn, (loading || !storeReady) && s.ctaBtnDisabled]}
               onPress={handleSubscribe}
               activeOpacity={0.85}
-              disabled={loading || (!storeReady && !MOCK_MODE)}
+              disabled={loading || (!storeReady && !isTestAccount)}
             >
               {loading ? (
                 <ActivityIndicator color="#FFF" />
@@ -579,10 +618,10 @@ export default function PaywallScreen() {
             </TouchableOpacity>
           )}
 
-          {/* ── Review mode testing button (REVIEW_MODE only — never shown in production) ── */}
-          {REVIEW_MODE && !isLifetimeFree && (
+          {/* ── Test mode unlock button (DEV or review account only) ── */}
+          {(DEV_MODE || isReviewAccount(user)) && !isLifetimeFree && (
             <>
-              <Text style={s.reviewLabel}>Review / Testing Mode</Text>
+              <Text style={s.reviewLabel}>Test Mode — not visible in production</Text>
               <TouchableOpacity
                 style={s.reviewBtn}
                 onPress={handleUnlockForTesting}

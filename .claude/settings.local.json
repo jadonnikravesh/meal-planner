@@ -19,7 +19,10 @@
       "PowerShell(Add-Type -AssemblyName System.Drawing; $img = [System.Drawing.Image]::FromFile\\('C:\\\\Users\\\\AtlasX\\\\Desktop\\\\Code Stuff\\\\meal-planner\\\\assets\\\\icon.png'\\); \"$\\($img.Width\\)x$\\($img.Height\\) $\\($img.PixelFormat\\)\"; $img.Dispose\\(\\))",
       "Bash(cat .gitmodules)",
       "Bash(git submodule *)",
-      "Bash(node -e \"const p=require\\('./backend/package.json'\\); console.log\\('start:', p.scripts.start\\); console.log\\('engines:', JSON.stringify\\(p.engines\\)\\); console.log\\('deps:', Object.keys\\(p.dependencies\\).join\\(', '\\)\\)\")"
+      "Bash(node -e \"const p=require\\('./backend/package.json'\\); console.log\\('start:', p.scripts.start\\); console.log\\('engines:', JSON.stringify\\(p.engines\\)\\); console.log\\('deps:', Object.keys\\(p.dependencies\\).join\\(', '\\)\\)\")",
+      "Bash(node -e \"const s = require\\('./server.js'\\); console.log\\('syntax ok'\\)\")",
+      "Bash(xargs grep *)",
+      "Bash(node -e \"const p=require\\('c:/Users/AtlasX/Desktop/Code Stuff/meal-planner/package.json'\\); console.log\\('expo-av:', p.dependencies['expo-av']\\); console.log\\('expo:', p.dependencies['expo']\\); console.log\\('expo-file-system:', p.dependencies['expo-file-system']\\)\")"
     ]
   }
 }

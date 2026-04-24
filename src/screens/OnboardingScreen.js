@@ -56,7 +56,7 @@ function InlineWheel({ label, options, initialIndex, onChange }) {
     const snapped = Math.max(0, Math.min(Math.round(raw), options.length - 1));
     setIdx(snapped);
     onChange(snapped);
-    scrollRef.current?.scrollTo({ y: snapped * ITEM_H, animated: true });
+    // Do NOT call scrollTo here — snapToInterval owns the scroll position
   };
 
   return (
@@ -83,6 +83,9 @@ function InlineWheel({ label, options, initialIndex, onChange }) {
           snapToInterval={ITEM_H}
           decelerationRate="fast"
           showsVerticalScrollIndicator={false}
+          bounces={false}
+          overScrollMode="never"
+          scrollEventThrottle={16}
           contentContainerStyle={{ paddingVertical: ITEM_H }}
           onMomentumScrollEnd={snapToNearest}
           onScrollEndDrag={snapToNearest}
@@ -129,7 +132,7 @@ function InlineWheel({ label, options, initialIndex, onChange }) {
 }
 
 // ─── Main onboarding screen ───────────────────────────────────────────────────
-export default function OnboardingScreen() {
+export default function OnboardingScreen({ onComplete } = {}) {
   const { dispatch } = useApp();
   const c = useTheme();
 
@@ -197,6 +200,7 @@ export default function OnboardingScreen() {
         units:         'imperial',
       },
     });
+    onComplete?.();
   };
 
   // ── Step renderers ──────────────────────────────────────────────────────────

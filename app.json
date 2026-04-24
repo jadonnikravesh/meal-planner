@@ -17,7 +17,9 @@
       "bundleIdentifier": "com.jadon.foodchatai",
       "icon": "./assets/icon.png",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSMicrophoneUsageDescription": "FoodChat AI uses your microphone so you can log meals by speaking.",
+        "NSSpeechRecognitionUsageDescription": "FoodChat AI transcribes your voice to log meals hands-free."
       }
     },
     "android": {

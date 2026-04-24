@@ -5,13 +5,17 @@ import { scheduleDailyNotifications, scheduleWeeklyWeightNotification } from './
 import { getTodayKey } from '../utils/nutrition';
 
 // ─── Global foreground handler ────────────────────────────────────────────────
-// Show alerts even when the app is open
+// Show local reminder alerts in-app, but suppress meal-logged push notifications
+// while the app is in the foreground — the user already sees the result in chat.
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge:  false,
-  }),
+  handleNotification: async (notification) => {
+    const isMealLog = notification.request.content.data?.type === 'meal_logged';
+    return {
+      shouldShowAlert: !isMealLog,
+      shouldPlaySound: !isMealLog,
+      shouldSetBadge:  false,
+    };
+  },
 });
 
 // ─── Android notification channel ────────────────────────────────────────────

@@ -9,6 +9,8 @@ import {
   TextInput,
   StatusBar,
   Animated,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -296,7 +298,10 @@ export default function DashboardScreen({ navigation }) {
 
       {/* Custom water modal */}
       <Modal visible={waterModalVisible} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
           <View style={[styles.modalBox, { backgroundColor: C.surface, borderColor: C.border }]}>
             <Text style={[styles.modalTitle, { color: C.text }]}>Add Water</Text>
             <TextInput
@@ -323,7 +328,7 @@ export default function DashboardScreen({ navigation }) {
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );

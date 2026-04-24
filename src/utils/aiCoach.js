@@ -1,5 +1,5 @@
 import { FOOD_DATABASE, PORTION_MULTIPLIERS, WATER_AMOUNTS } from './foodDatabase';
-import { formatTime } from './nutrition';
+import { formatTime, getDateKey } from './nutrition';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PARSING
@@ -266,7 +266,7 @@ export function analyzeUserTrends(dailyLogs, userProfile, daysBack = 7) {
   for (let i = 1; i <= daysBack; i++) {
     const d = new Date(today);
     d.setDate(d.getDate() - i);
-    const key = d.toISOString().split('T')[0];
+    const key = getDateKey(d);
     if (dailyLogs[key] && dailyLogs[key].calories > 0) {
       logs.push(dailyLogs[key]);
     }

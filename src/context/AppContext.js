@@ -1,10 +1,19 @@
 import React, { createContext, useContext, useReducer, useEffect, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { DARK_COLORS, LIGHT_COLORS } from '../theme';
-import { calculateTargets } from '../utils/nutrition';
+import { calculateTargets, getTodayKey } from '../utils/nutrition';
+import { useAuth } from './AuthContext';
+
+// How many days of history to keep in AsyncStorage (older entries are pruned on
+// each daily reset to prevent unbounded storage growth).
+const HISTORY_RETAIN_DAYS = 90;
 
 const AppContext = createContext(null);
-const STORAGE_KEY = 'mealPlannerState_v1';
+
+// Per-user key — prevents data leaking between accounts on the same device.
+// Falls back to the legacy key for unauthenticated/anonymous state.
+const LEGACY_KEY = 'mealPlannerState_v1';
+const storageKey = (uid) => uid ? `mealPlannerState_v1_${uid}` : LEGACY_KEY;
 
 const DEFAULT_PROFILE = {
   name: '',
@@ -19,15 +28,18 @@ const DEFAULT_PROFILE = {
   proteinTarget: 150,
   carbTarget: 225,
   fatTarget: 56,
-  dietaryRestrictions: '',  // e.g. "vegetarian, gluten-free"
-  allergies: '',            // e.g. "peanuts, shellfish"
+  dietaryRestrictions: '',
+  allergies: '',
 };
 
 const INITIAL_STATE = {
   isOnboarded: false,
   userProfile: DEFAULT_PROFILE,
-  dailyLogs: {},      // { 'YYYY-MM-DD': { calories, protein, carbs, fat, meals[] } }
-  chatMessages: [],   // persistent chat history
+  // History: keyed by local date 'YYYY-MM-DD'. Today's entry is the live log;
+  // past entries are read-only history. Pruned to HISTORY_RETAIN_DAYS on reset.
+  dailyLogs: {},
+  chatMessages: [],
+  lastActiveDate: null,   // 'YYYY-MM-DD' — used to detect a new calendar day on open
   settings: {
     darkMode: true,
     units: 'imperial',
@@ -36,15 +48,15 @@ const INITIAL_STATE = {
     voiceEnabled: true,
   },
   weeklyReview: {
-    lastReviewedDate: null,   // 'YYYY-MM-DD' — date of last completed/dismissed review
-    weightHistory: [],        // [{ date: 'YYYY-MM-DD', weight: string }]
+    lastReviewedDate: null,
+    weightHistory: [],
   },
   subscription: {
-    status:         'none',   // 'none' | 'trial' | 'active' | 'canceled'
-    plan:           null,     // 'monthly' | 'yearly'
+    status:         'none',
+    plan:           null,
     subscriptionId: null,
     customerId:     null,
-    trialEnd:       null,     // Unix timestamp
+    trialEnd:       null,
   },
 };
 
@@ -60,7 +72,6 @@ function reducer(state, action) {
       return {
         ...INITIAL_STATE,
         ...loaded,
-        // Deep-merge nested objects so old saves without them still work
         weeklyReview: {
           ...INITIAL_STATE.weeklyReview,
           ...(loaded.weeklyReview || {}),
@@ -71,6 +82,42 @@ function reducer(state, action) {
         },
       };
     }
+
+    // Fired when the calendar day changes (on app open after overnight close, or
+    // during a live midnight rollover). Clears chat history, prunes old daily logs
+    // beyond HISTORY_RETAIN_DAYS, and stamps the new date into lastActiveDate.
+    // Past meals remain safely in dailyLogs under their original date keys.
+    case 'DAILY_RESET': {
+      const { date } = action.payload;
+      const cutoff = (() => {
+        const d = new Date();
+        d.setDate(d.getDate() - HISTORY_RETAIN_DAYS);
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        return `${y}-${m}-${dd}`;
+      })();
+      const prunedLogs = Object.fromEntries(
+        Object.entries(state.dailyLogs).filter(([k]) => k >= cutoff),
+      );
+      const keptCount   = Object.keys(prunedLogs).length;
+      const prunedCount = Object.keys(state.dailyLogs).length - keptCount;
+      console.log(
+        `[AppContext] DAILY_RESET | ${state.lastActiveDate ?? 'first-run'} → ${date}` +
+        ` | history: ${keptCount} days kept, ${prunedCount} pruned (>${HISTORY_RETAIN_DAYS}d)`,
+      );
+      return {
+        ...state,
+        chatMessages:   [],
+        dailyLogs:      prunedLogs,
+        lastActiveDate: date,
+      };
+    }
+
+    // Stamps the date on first-ever launch (no prior lastActiveDate) without
+    // clearing chat or logs — nothing to reset on a brand-new install.
+    case 'SET_LAST_ACTIVE_DATE':
+      return { ...state, lastActiveDate: action.payload };
 
     case 'COMPLETE_ONBOARDING': {
       const targets = calculateTargets(action.payload);
@@ -95,12 +142,17 @@ function reducer(state, action) {
     case 'LOG_MEAL': {
       const { date, meal } = action.payload;
       const existing = ensureLog(state.dailyLogs[date]);
+      // Dedup: if a meal with this ID was already logged (e.g. retry / Firestore snapshot
+      // arriving after optimistic local update), skip it silently.
+      if (meal.id && existing.meals?.some(m => String(m.id) === String(meal.id))) {
+        return state;
+      }
       const updated = {
         ...existing,
-        calories: (existing.calories || 0) + meal.calories,
-        protein: (existing.protein || 0) + meal.protein,
-        carbs: (existing.carbs || 0) + meal.carbs,
-        fat: (existing.fat || 0) + meal.fat,
+        calories: (existing.calories || 0) + (meal.calories ?? meal.kcal ?? 0),
+        protein:  (existing.protein  || 0) + (meal.protein  || 0),
+        carbs:    (existing.carbs    || 0) + (meal.carbs    || 0),
+        fat:      (existing.fat      || 0) + (meal.fat      || 0),
         meals: [...(existing.meals || []), meal],
       };
       return { ...state, dailyLogs: { ...state.dailyLogs, [date]: updated } };
@@ -142,7 +194,6 @@ function reducer(state, action) {
         return state;
       }
 
-      // String() coercion ensures numeric IDs from legacy data match string IDs from new logs
       const remaining = existing.meals.filter((m) => String(m.id) !== String(mealId));
 
       console.log('[AppContext REMOVE_MEAL] removed:', existing.meals.length - remaining.length,
@@ -189,18 +240,15 @@ function reducer(state, action) {
     case 'SET_VOICE_ENABLED':
       return { ...state, settings: { ...state.settings, voiceEnabled: action.payload } };
 
-    // Dismiss the weekly review without saving a new weight.
-    // Marks the date so the review doesn't appear again for 7 days.
     case 'DISMISS_WEEKLY_REVIEW':
       return {
         ...state,
         weeklyReview: {
           ...(state.weeklyReview || INITIAL_STATE.weeklyReview),
-          lastReviewedDate: action.payload,   // today's YYYY-MM-DD key
+          lastReviewedDate: action.payload,
         },
       };
 
-    // Save user-confirmed weight and append to history.
     case 'SAVE_WEIGHT_UPDATE': {
       const { weight, date } = action.payload;
       const prev = state.weeklyReview || INITIAL_STATE.weeklyReview;
@@ -215,7 +263,6 @@ function reducer(state, action) {
       };
     }
 
-    // Merge partial subscription updates — called after Stripe returns a result.
     case 'SET_SUBSCRIPTION':
       return {
         ...state,
@@ -231,35 +278,121 @@ function reducer(state, action) {
 }
 
 export function AppProvider({ children }) {
-  const [state, dispatch]     = useReducer(reducer, INITIAL_STATE);
-  const [stateLoaded, setStateLoaded] = useState(false);
-  const initialized = useRef(false);
-  const saveTimeout = useRef(null);
+  // useAuth() works here because AppProvider renders inside AuthProvider.
+  const { user, loading: authLoading } = useAuth();
+  const uid = user?.uid ?? null;
 
-  // Load persisted state on mount
+  const [state, dispatch]         = useReducer(reducer, INITIAL_STATE);
+  const [stateLoaded, setStateLoaded] = useState(false);
+  const initialized    = useRef(false);
+  const saveTimeout    = useRef(null);
+  const prevUidRef     = useRef(undefined); // undefined = "never set" sentinel
+  const currentDateRef = useRef(getTodayKey()); // for midnight rollover detection
+
+  // ── Load per-user state whenever the authenticated user changes ───────────
+  // Waits for Firebase auth to resolve (authLoading = false) before reading
+  // AsyncStorage, so we never load the wrong user's data.
   useEffect(() => {
-    AsyncStorage.getItem(STORAGE_KEY)
-      .then((raw) => {
+    if (authLoading) return; // wait for Firebase auth cache to resolve
+
+    // uid unchanged — nothing to do (guards against spurious re-renders)
+    if (uid === prevUidRef.current) return;
+    prevUidRef.current = uid;
+
+    // Block saves until the new user's state is fully loaded
+    initialized.current = false;
+    setStateLoaded(false);
+
+    if (!uid) {
+      // Logged out — wipe in-memory state so the next user starts clean
+      dispatch({ type: 'RESET_ONBOARDING' });
+      initialized.current = true;
+      setStateLoaded(true);
+      return;
+    }
+
+    // Load this user's persisted state
+    const key = storageKey(uid);
+    AsyncStorage.getItem(key)
+      .then(async (raw) => {
+        let parsed = null;
         if (raw) {
-          try {
-            const parsed = JSON.parse(raw);
-            dispatch({ type: 'LOAD_STATE', payload: parsed });
-          } catch (_) {}
+          try { parsed = JSON.parse(raw); }
+          catch (_) { /* corrupted — start fresh */ }
+        } else {
+          // First login on this device: try migrating from the legacy shared key
+          const legacy = await AsyncStorage.getItem(LEGACY_KEY).catch(() => null);
+          if (legacy) {
+            try { parsed = JSON.parse(legacy); }
+            catch (_) {}
+          }
         }
+
+        if (parsed) {
+          dispatch({ type: 'LOAD_STATE', payload: parsed });
+
+          // ── Daily-reset check ───────────────────────────────────────────────
+          // Compare the date the app was last used to today's local date.
+          // If they differ, the user is opening the app on a new calendar day:
+          // clear yesterday's chat messages and prune old history.
+          // (Yesterday's meals are already safely stored in dailyLogs under
+          //  their date key — they are NOT deleted, only the in-memory chat is cleared.)
+          const today = getTodayKey();
+          if (parsed.lastActiveDate && parsed.lastActiveDate !== today) {
+            console.log(
+              '[AppContext] new day on open | was:', parsed.lastActiveDate,
+              '→ now:', today, '| clearing chat, pruning old logs',
+            );
+            dispatch({ type: 'DAILY_RESET', payload: { date: today } });
+          } else if (!parsed.lastActiveDate) {
+            // Brand-new install — just stamp today's date; nothing to reset.
+            console.log('[AppContext] first launch — stamping date:', today);
+            dispatch({ type: 'SET_LAST_ACTIVE_DATE', payload: today });
+          } else {
+            console.log('[AppContext] same day resume | date:', today,
+              '| logs:', Object.keys(parsed.dailyLogs || {}).length, 'days');
+          }
+        } else {
+          // Nothing in storage yet — stamp today so the next day we know to reset.
+          const today = getTodayKey();
+          dispatch({ type: 'SET_LAST_ACTIVE_DATE', payload: today });
+          console.log('[AppContext] no stored state — fresh start for uid:', uid);
+        }
+      })
+      .catch(() => { /* storage unavailable — start with defaults */ })
+      .finally(() => {
         initialized.current = true;
         setStateLoaded(true);
-      })
-      .catch(() => { initialized.current = true; setStateLoaded(true); });
-  }, []);
+      });
+  }, [uid, authLoading]);
 
-  // Debounced persist on every state change
+  // ── Debounced persist to the current user's scoped key ───────────────────
   useEffect(() => {
-    if (!initialized.current) return;
+    if (!initialized.current || !uid) return; // never save for logged-out state
     if (saveTimeout.current) clearTimeout(saveTimeout.current);
     saveTimeout.current = setTimeout(() => {
-      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(state)).catch(() => {});
+      AsyncStorage.setItem(storageKey(uid), JSON.stringify(state)).catch(() => {});
+      console.log('[AppContext] persisted state | uid:', uid,
+        '| logs:', Object.keys(state.dailyLogs).length, 'days',
+        '| chat msgs:', state.chatMessages.length);
     }, 500);
-  }, [state]);
+  }, [state, uid]);
+
+  // ── Midnight rollover: poll every 30 s while app is open ─────────────────
+  // Handles the case where the user leaves the app open past midnight.
+  // MealContext has its own 30-s interval for in-memory meals; this one handles
+  // AppContext-owned state: chatMessages reset and history pruning.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const today = getTodayKey();
+      if (today !== currentDateRef.current) {
+        currentDateRef.current = today;
+        console.log('[AppContext] midnight rollover detected → DAILY_RESET for:', today);
+        dispatch({ type: 'DAILY_RESET', payload: { date: today } });
+      }
+    }, 30_000);
+    return () => clearInterval(id);
+  }, []);
 
   return (
     <AppContext.Provider value={{ state, dispatch, stateLoaded }}>
@@ -277,4 +410,34 @@ export function useApp() {
 export function useTheme() {
   const { state } = useContext(AppContext);
   return state.settings.darkMode ? DARK_COLORS : LIGHT_COLORS;
+}
+
+/**
+ * useHistory — access past daily logs.
+ *
+ * Returns helpers for reading history from dailyLogs:
+ *   getDay(dateKey)     — log for a specific 'YYYY-MM-DD' date
+ *   getRecent(n)        — array of the last n days that have data, newest first
+ *   allDates            — sorted array of all date keys with logged data
+ *
+ * Example:
+ *   const { getDay, getRecent } = useHistory();
+ *   const yesterday = getDay('2024-01-14');   // { calories, protein, meals, … }
+ *   const week      = getRecent(7);           // [{ date, calories, meals, … }, …]
+ */
+export function useHistory() {
+  const { state } = useContext(AppContext);
+  const { dailyLogs } = state;
+
+  const allDates = Object.keys(dailyLogs)
+    .filter((k) => (dailyLogs[k]?.calories ?? 0) > 0 || (dailyLogs[k]?.meals?.length ?? 0) > 0)
+    .sort()
+    .reverse(); // newest first
+
+  const getDay = (dateKey) => dailyLogs[dateKey] ?? null;
+
+  const getRecent = (n = 7) =>
+    allDates.slice(0, n).map((date) => ({ date, ...dailyLogs[date] }));
+
+  return { getDay, getRecent, allDates };
 }

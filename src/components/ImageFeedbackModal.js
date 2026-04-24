@@ -199,6 +199,8 @@ export default function ImageFeedbackModal({
               numColumns={BROWSE_COLS}
               contentContainerStyle={s.browseGrid}
               showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
               renderItem={({ item: food }) => (
                 <TouchableOpacity
                   style={s.browseCell}

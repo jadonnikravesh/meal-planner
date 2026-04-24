@@ -2,12 +2,14 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
   StyleSheet, Switch, TextInput, Modal, Linking, Platform,
+  KeyboardAvoidingView, Alert, ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as StoreReview from 'expo-store-review';
 import { useApp, useTheme } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
+import { DEV_MODE, isReviewAccount } from '../config/testMode';
 import TermsOfServiceScreen from './TermsOfServiceScreen';
 import PrivacyPolicyScreen  from './PrivacyPolicyScreen';
 
@@ -34,7 +36,6 @@ async function requestAppRating() {
   } catch (_) {}
 }
 
-const USER_EMAIL = 'alex@example.com'; // placeholder until Firebase profile sync
 
 // ─── Picker option arrays ─────────────────────────────────────────────────────
 const AGE_OPTIONS = Array.from({ length: 83 }, (_, i) => `${i + 13} yrs`);
@@ -89,54 +90,59 @@ function NameEditModal({ visible, value, onConfirm, onDismiss }) {
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onDismiss}>
-      <TouchableOpacity
-        style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)' }}
-        activeOpacity={1}
-        onPress={onDismiss}
-      />
-      <View style={{
-        backgroundColor: c.card,
-        borderTopLeftRadius: 26, borderTopRightRadius: 26,
-        paddingBottom: 36,
-        borderTopWidth: 1, borderColor: c.border,
-      }}>
-        {/* Header */}
+      <KeyboardAvoidingView
+        style={{ flex: 1, justifyContent: 'flex-end' }}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
+        <TouchableOpacity
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)' }}
+          activeOpacity={1}
+          onPress={onDismiss}
+        />
         <View style={{
-          flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-          paddingHorizontal: 20, paddingVertical: 16,
-          borderBottomWidth: 1, borderBottomColor: c.border,
+          backgroundColor: c.card,
+          borderTopLeftRadius: 26, borderTopRightRadius: 26,
+          paddingBottom: 36,
+          borderTopWidth: 1, borderColor: c.border,
         }}>
-          <TouchableOpacity onPress={onDismiss} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-            <Text style={{ fontSize: 15, color: c.muted }}>Cancel</Text>
-          </TouchableOpacity>
-          <Text style={{ fontSize: 16, fontWeight: '700', color: c.white }}>Name</Text>
-          <TouchableOpacity onPress={handleDone} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-            <Text style={{ fontSize: 15, fontWeight: '700', color: c.accent }}>Done</Text>
-          </TouchableOpacity>
-        </View>
+          {/* Header */}
+          <View style={{
+            flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+            paddingHorizontal: 20, paddingVertical: 16,
+            borderBottomWidth: 1, borderBottomColor: c.border,
+          }}>
+            <TouchableOpacity onPress={onDismiss} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <Text style={{ fontSize: 15, color: c.muted }}>Cancel</Text>
+            </TouchableOpacity>
+            <Text style={{ fontSize: 16, fontWeight: '700', color: c.white }}>Name</Text>
+            <TouchableOpacity onPress={handleDone} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <Text style={{ fontSize: 15, fontWeight: '700', color: c.accent }}>Done</Text>
+            </TouchableOpacity>
+          </View>
 
-        {/* Input area */}
-        <View style={{ paddingHorizontal: 20, paddingTop: 24, paddingBottom: 8 }}>
-          <TextInput
-            ref={inputRef}
-            value={draft}
-            onChangeText={setDraft}
-            placeholder="Enter your name"
-            placeholderTextColor={c.muted}
-            selectionColor={c.accent}
-            returnKeyType="done"
-            onSubmitEditing={handleDone}
-            style={{
-              fontSize: 18, fontWeight: '600', color: c.white,
-              backgroundColor: c.card2,
-              borderWidth: 1, borderColor: c.accent + '55',
-              borderRadius: 14,
-              paddingHorizontal: 16, paddingVertical: 14,
-              outlineStyle: 'none',
-            }}
-          />
+          {/* Input area */}
+          <View style={{ paddingHorizontal: 20, paddingTop: 24, paddingBottom: 8 }}>
+            <TextInput
+              ref={inputRef}
+              value={draft}
+              onChangeText={setDraft}
+              placeholder="Enter your name"
+              placeholderTextColor={c.muted}
+              selectionColor={c.accent}
+              returnKeyType="done"
+              onSubmitEditing={handleDone}
+              style={{
+                fontSize: 18, fontWeight: '600', color: c.white,
+                backgroundColor: c.card2,
+                borderWidth: 1, borderColor: c.accent + '55',
+                borderRadius: 14,
+                paddingHorizontal: 16, paddingVertical: 14,
+                outlineStyle: 'none',
+              }}
+            />
+          </View>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -161,71 +167,168 @@ function TextListModal({ visible, title, subtitle, placeholder, value, onConfirm
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onDismiss}>
-      <TouchableOpacity
-        style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)' }}
-        activeOpacity={1}
-        onPress={onDismiss}
-      />
-      <View style={{
-        backgroundColor: c.card,
-        borderTopLeftRadius: 26, borderTopRightRadius: 26,
-        paddingBottom: 36,
-        borderTopWidth: 1, borderColor: c.border,
-      }}>
-        {/* Header */}
+      <KeyboardAvoidingView
+        style={{ flex: 1, justifyContent: 'flex-end' }}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
+        <TouchableOpacity
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)' }}
+          activeOpacity={1}
+          onPress={onDismiss}
+        />
         <View style={{
-          flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-          paddingHorizontal: 20, paddingVertical: 16,
-          borderBottomWidth: 1, borderBottomColor: c.border,
+          backgroundColor: c.card,
+          borderTopLeftRadius: 26, borderTopRightRadius: 26,
+          paddingBottom: 36,
+          borderTopWidth: 1, borderColor: c.border,
         }}>
-          <TouchableOpacity onPress={onDismiss} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-            <Text style={{ fontSize: 15, color: c.muted }}>Cancel</Text>
-          </TouchableOpacity>
-          <Text style={{ fontSize: 16, fontWeight: '700', color: c.white }}>{title}</Text>
-          <TouchableOpacity onPress={handleDone} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-            <Text style={{ fontSize: 15, fontWeight: '700', color: c.accent }}>Done</Text>
-          </TouchableOpacity>
+          {/* Header */}
+          <View style={{
+            flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+            paddingHorizontal: 20, paddingVertical: 16,
+            borderBottomWidth: 1, borderBottomColor: c.border,
+          }}>
+            <TouchableOpacity onPress={onDismiss} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <Text style={{ fontSize: 15, color: c.muted }}>Cancel</Text>
+            </TouchableOpacity>
+            <Text style={{ fontSize: 16, fontWeight: '700', color: c.white }}>{title}</Text>
+            <TouchableOpacity onPress={handleDone} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <Text style={{ fontSize: 15, fontWeight: '700', color: c.accent }}>Done</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Hint */}
+          <Text style={{ fontSize: 12, color: c.muted, paddingHorizontal: 20, paddingTop: 16, paddingBottom: 4 }}>
+            {subtitle}
+          </Text>
+
+          {/* Input */}
+          <View style={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 8 }}>
+            <TextInput
+              ref={inputRef}
+              value={draft}
+              onChangeText={setDraft}
+              placeholder={placeholder}
+              placeholderTextColor={c.muted}
+              selectionColor={c.accent}
+              returnKeyType="done"
+              onSubmitEditing={handleDone}
+              multiline
+              scrollEnabled
+              style={{
+                fontSize: 15, fontWeight: '500', color: c.white,
+                backgroundColor: c.card2,
+                borderWidth: 1, borderColor: c.accent + '55',
+                borderRadius: 14,
+                paddingHorizontal: 16, paddingVertical: 14,
+                minHeight: 80, maxHeight: 140, textAlignVertical: 'top',
+                outlineStyle: 'none',
+              }}
+            />
+          </View>
+
+          {/* Clear button */}
+          {draft.trim().length > 0 && (
+            <TouchableOpacity
+              onPress={() => setDraft('')}
+              style={{ alignSelf: 'center', paddingVertical: 8, paddingHorizontal: 20 }}
+            >
+              <Text style={{ fontSize: 13, color: c.muted }}>Clear all</Text>
+            </TouchableOpacity>
+          )}
         </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
 
-        {/* Hint */}
-        <Text style={{ fontSize: 12, color: c.muted, paddingHorizontal: 20, paddingTop: 16, paddingBottom: 4 }}>
-          {subtitle}
-        </Text>
+// ─── Re-authentication modal (shown when Firebase requires recent login) ──────
+function ReauthModal({ visible, email, onConfirm, onDismiss, error, loading }) {
+  const c = useTheme();
+  const inputRef = useRef(null);
+  const [password, setPassword] = useState('');
 
-        {/* Input */}
-        <View style={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 8 }}>
-          <TextInput
-            ref={inputRef}
-            value={draft}
-            onChangeText={setDraft}
-            placeholder={placeholder}
-            placeholderTextColor={c.muted}
-            selectionColor={c.accent}
-            returnKeyType="done"
-            onSubmitEditing={handleDone}
-            multiline
-            style={{
-              fontSize: 15, fontWeight: '500', color: c.white,
-              backgroundColor: c.card2,
-              borderWidth: 1, borderColor: c.accent + '55',
-              borderRadius: 14,
-              paddingHorizontal: 16, paddingVertical: 14,
-              minHeight: 80, textAlignVertical: 'top',
-              outlineStyle: 'none',
-            }}
-          />
+  useEffect(() => {
+    if (!visible) { setPassword(''); return; }
+    const t = setTimeout(() => inputRef.current?.focus(), 250);
+    return () => clearTimeout(t);
+  }, [visible]);
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onDismiss}>
+      <KeyboardAvoidingView
+        style={{ flex: 1, justifyContent: 'flex-end' }}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
+        <TouchableOpacity
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.55)' }}
+          activeOpacity={1}
+          onPress={onDismiss}
+          disabled={loading}
+        />
+        <View style={{
+          backgroundColor: c.card,
+          borderTopLeftRadius: 26, borderTopRightRadius: 26,
+          paddingBottom: 40,
+          borderTopWidth: 1, borderColor: c.border,
+        }}>
+          {/* Header */}
+          <View style={{
+            flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+            paddingHorizontal: 20, paddingVertical: 16,
+            borderBottomWidth: 1, borderBottomColor: c.border,
+          }}>
+            <TouchableOpacity onPress={onDismiss} disabled={loading} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <Text style={{ fontSize: 15, color: loading ? c.border : c.muted }}>Cancel</Text>
+            </TouchableOpacity>
+            <Text style={{ fontSize: 16, fontWeight: '700', color: c.white }}>Confirm Identity</Text>
+            <TouchableOpacity
+              onPress={() => onConfirm(password)}
+              disabled={loading || !password.trim()}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              {loading
+                ? <ActivityIndicator size="small" color={c.red} />
+                : <Text style={{ fontSize: 15, fontWeight: '700', color: !password.trim() ? c.border : c.red }}>Delete</Text>
+              }
+            </TouchableOpacity>
+          </View>
+
+          {/* Body */}
+          <View style={{ paddingHorizontal: 20, paddingTop: 20, gap: 12 }}>
+            <Text style={{ fontSize: 14, color: c.muted, lineHeight: 20 }}>
+              For security, please enter your password to confirm account deletion.
+            </Text>
+            <Text style={{ fontSize: 12, color: c.muted, fontWeight: '500' }}>{email}</Text>
+
+            <TextInput
+              ref={inputRef}
+              value={password}
+              onChangeText={setPassword}
+              placeholder="Password"
+              placeholderTextColor={c.muted}
+              secureTextEntry
+              autoComplete="password"
+              returnKeyType="done"
+              onSubmitEditing={() => password.trim() && onConfirm(password)}
+              editable={!loading}
+              style={{
+                fontSize: 16, color: c.white,
+                backgroundColor: c.card2,
+                borderWidth: 1,
+                borderColor: error ? '#EF4444' : c.accent + '55',
+                borderRadius: 14,
+                paddingHorizontal: 16, paddingVertical: 14,
+                outlineStyle: 'none',
+              }}
+            />
+
+            {error ? (
+              <Text style={{ fontSize: 13, color: '#EF4444', fontWeight: '500' }}>{error}</Text>
+            ) : null}
+          </View>
         </View>
-
-        {/* Clear button */}
-        {draft.trim().length > 0 && (
-          <TouchableOpacity
-            onPress={() => setDraft('')}
-            style={{ alignSelf: 'center', paddingVertical: 8, paddingHorizontal: 20 }}
-          >
-            <Text style={{ fontSize: 13, color: c.muted }}>Clear all</Text>
-          </TouchableOpacity>
-        )}
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -253,7 +356,8 @@ function WheelPickerModal({ visible, title, options, selectedIndex, onConfirm, o
     const raw     = e.nativeEvent.contentOffset.y / ITEM_H;
     const snapped = Math.max(0, Math.min(Math.round(raw), options.length - 1));
     setIdx(snapped);
-    scrollRef.current?.scrollTo({ y: snapped * ITEM_H, animated: true });
+    // Do NOT call scrollTo here — snapToInterval owns the scroll position.
+    // Calling scrollTo while the native snap animation is running causes jitter.
   };
 
   return (
@@ -309,6 +413,9 @@ function WheelPickerModal({ visible, title, options, selectedIndex, onConfirm, o
             snapToInterval={ITEM_H}
             decelerationRate="fast"
             showsVerticalScrollIndicator={false}
+            bounces={false}
+            overScrollMode="never"
+            scrollEventThrottle={16}
             contentContainerStyle={{ paddingVertical: ITEM_H * 2 }}
             onMomentumScrollEnd={snapToNearest}
             onScrollEndDrag={snapToNearest}
@@ -463,7 +570,7 @@ function PickerRow({ icon, iconBg, iconColor, label, displayValue, pickerTitle, 
 
 export default function SettingsScreen() {
   const { state, dispatch } = useApp();
-  const { signOut } = useAuth();
+  const { user, signOut, deleteAccount, reauthenticate } = useAuth();
   const c = useTheme();
   const s = useMemo(() => makeStyles(c), [c]);
 
@@ -562,6 +669,80 @@ export default function SettingsScreen() {
   const [showTerms,   setShowTerms]   = useState(false);
   const [showPrivacy, setShowPrivacy] = useState(false);
 
+  // ── Account deletion state ───────────────────────────────────────────────────
+  const [deleting,      setDeleting]      = useState(false);
+  const [showReauth,    setShowReauth]    = useState(false);
+  const [reauthError,   setReauthError]   = useState(null);
+  const [reauthLoading, setReauthLoading] = useState(false);
+
+  // Step 1 — tapping the button.
+  // Test accounts have no Firebase Auth record, so skip the password modal.
+  // Real accounts: always collect password first — Firebase requires a recent
+  // login for deleteUser() regardless, so asking upfront avoids a two-step flow.
+  const handleDeleteAccount = () => {
+    if (user?.isTestAccount) {
+      Alert.alert(
+        'Delete Account',
+        'This will permanently delete all your data. This action cannot be undone.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Delete', style: 'destructive', onPress: performDeletion },
+        ],
+      );
+    } else {
+      setReauthError(null);
+      setShowReauth(true);
+    }
+  };
+
+  // Step 2 (real accounts) — user submits password in the ReauthModal.
+  const handleReauthConfirm = async (password) => {
+    if (!password.trim()) return;
+    setReauthLoading(true);
+    setReauthError(null);
+    try {
+      await reauthenticate(password);
+      // Credentials accepted — close modal and delete.
+      setShowReauth(false);
+      await performDeletion();
+    } catch (err) {
+      const code = err?.code ?? '';
+      if (code === 'auth/wrong-password' || code === 'auth/invalid-credential') {
+        setReauthError('Incorrect password. Please try again.');
+      } else if (code === 'auth/too-many-requests') {
+        setReauthError('Too many attempts. Please wait a moment and try again.');
+      } else if (code === 'auth/network-request-failed') {
+        setReauthError('No internet connection. Please check your network.');
+      } else {
+        setReauthError(`Error: ${err?.message ?? 'Unknown error'}`);
+      }
+    } finally {
+      setReauthLoading(false);
+    }
+  };
+
+  // Final step — runs after confirmation (test) or re-auth (real accounts).
+  const performDeletion = async () => {
+    setDeleting(true);
+    try {
+      await deleteAccount();
+      // Firebase fires onAuthStateChanged(null) → AuthContext sets user = null
+      // → AppContext dispatches RESET_ONBOARDING → RootNavigator shows login.
+    } catch (err) {
+      setDeleting(false);
+      const isOffline =
+        err?.code === 'auth/network-request-failed' ||
+        err?.message?.toLowerCase().includes('network');
+      Alert.alert(
+        'Deletion Failed',
+        isOffline
+          ? 'No internet connection. Please check your network and try again.'
+          : `Something went wrong: ${err?.message ?? 'Unknown error'}. Please try again.`,
+        [{ text: 'OK' }],
+      );
+    }
+  };
+
   const toggleDarkMode = (val) => dispatch({ type: 'SET_DARK_MODE', payload: val });
 
   const switchProps = (value, onChange) => ({
@@ -586,7 +767,7 @@ export default function SettingsScreen() {
           </View>
           <View style={s.profileInfo}>
             <Text style={s.profileName}>{name || 'Your Name'}</Text>
-            <Text style={s.profileEmail}>{USER_EMAIL}</Text>
+            <Text style={s.profileEmail}>{user?.email || ''}</Text>
             <Text style={s.profileGoal}>{goalDisplay} · {activityDisplay}</Text>
           </View>
         </View>
@@ -721,17 +902,64 @@ export default function SettingsScreen() {
         {/* ── Account ── */}
         <SectionLabel label="Account" c={c} />
         <Card c={c}>
+          {/* Sign Out */}
           <TouchableOpacity
-            style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 13 }}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: c.border }}
             activeOpacity={0.7}
             onPress={signOut}
+            disabled={deleting}
           >
             <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: darkMode ? '#2E1214' : '#FFF0F0', justifyContent: 'center', alignItems: 'center' }}>
               <Ionicons name="log-out-outline" size={17} color={c.red} />
             </View>
             <Text style={{ fontSize: 14, fontWeight: '600', color: c.red }}>Sign Out</Text>
           </TouchableOpacity>
+
+          {/* Delete Account */}
+          <TouchableOpacity
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 13, opacity: deleting ? 0.5 : 1 }}
+            activeOpacity={0.7}
+            onPress={handleDeleteAccount}
+            disabled={deleting}
+          >
+            <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: darkMode ? '#2A1010' : '#FEE2E2', justifyContent: 'center', alignItems: 'center' }}>
+              {deleting
+                ? <ActivityIndicator size="small" color="#EF4444" />
+                : <Ionicons name="trash-outline" size={17} color="#EF4444" />
+              }
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 14, fontWeight: '600', color: '#EF4444' }}>
+                {deleting ? 'Deleting Account…' : 'Delete Account'}
+              </Text>
+              <Text style={{ fontSize: 11, color: c.muted, marginTop: 1 }}>
+                Permanently removes all data
+              </Text>
+            </View>
+          </TouchableOpacity>
         </Card>
+
+        {/* ── Developer (DEV or review account only — invisible to real users) ── */}
+        {(DEV_MODE || isReviewAccount(user)) && (
+          <>
+            <SectionLabel label="Developer" c={c} />
+            <Card c={c}>
+              <RowItem
+                c={c}
+                icon="construct-outline"
+                iconBg="#2A1F00"
+                iconColor="#F59E0B"
+                label="Open Paywall"
+                value="Reset subscription to test the paywall"
+                onPress={() => dispatch({
+                  type: 'SET_SUBSCRIPTION',
+                  payload: { status: 'none', plan: null, subscriptionId: null, customerId: null, trialEnd: null },
+                })}
+                noBorder
+              />
+            </Card>
+          </>
+        )}
 
         <Text style={s.version}>FoodChat AI · v1.0.0 · SDK 54</Text>
         <View style={{ height: 20 }} />
@@ -740,6 +968,15 @@ export default function SettingsScreen() {
 
       <TermsOfServiceScreen visible={showTerms}   onClose={() => setShowTerms(false)}   />
       <PrivacyPolicyScreen  visible={showPrivacy} onClose={() => setShowPrivacy(false)} />
+
+      <ReauthModal
+        visible={showReauth}
+        email={user?.email ?? ''}
+        loading={reauthLoading}
+        error={reauthError}
+        onConfirm={handleReauthConfirm}
+        onDismiss={() => { if (!reauthLoading) { setShowReauth(false); setReauthError(null); } }}
+      />
 
       <TextListModal
         visible={showDietModal}

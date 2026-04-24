@@ -77,11 +77,20 @@ export function calculateTargets(profile) {
 
 export function getTodayKey() {
   const now = new Date();
-  return now.toISOString().split('T')[0];
+  // Use local calendar date, NOT UTC. toISOString() returns UTC, which flips the
+  // "day" at 7–8pm for US Eastern users — meals logged in the evening would appear
+  // under tomorrow's date key.
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 export function getDateKey(date) {
-  return date.toISOString().split('T')[0];
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 export function getAdherenceScore(log, targets) {

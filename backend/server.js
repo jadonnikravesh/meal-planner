@@ -47,7 +47,7 @@ function savePromoData() {
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' })); // large enough for base64 audio
 
 // ─── Anthropic client ─────────────────────────────────────────────────────────
 const anthropic = new Anthropic({
@@ -56,6 +56,55 @@ const anthropic = new Anthropic({
 
 // ─── In-memory meal log ───────────────────────────────────────────────────────
 let mealLog = [];
+
+// ─── Push notification helper ─────────────────────────────────────────────────
+// Sends an Expo push notification via the Expo Push API (no SDK needed).
+// jobId dedup prevents double-notifications when the client retries a request
+// whose response never reached it (e.g. app closed mid-flight).
+const _sentJobIds = new Map(); // jobId → timestamp
+
+async function sendMealPushNotification(pushToken, mealName, jobId) {
+  if (!pushToken || !pushToken.startsWith('ExponentPushToken')) return;
+
+  // Deduplicate by jobId (10-minute TTL keeps the map small)
+  if (jobId) {
+    const now = Date.now();
+    if (_sentJobIds.has(jobId)) {
+      console.log('[push] dedup — already sent for job:', jobId);
+      return;
+    }
+    _sentJobIds.set(jobId, now);
+    // Prune stale entries so the map never grows unbounded
+    if (_sentJobIds.size > 500) {
+      const cutoff = now - 10 * 60 * 1000;
+      for (const [id, ts] of _sentJobIds) {
+        if (ts < cutoff) _sentJobIds.delete(id);
+      }
+    }
+  }
+
+  try {
+    const body = JSON.stringify({
+      to:    pushToken,
+      sound: 'default',
+      title: 'Meal Logged',
+      body:  `${mealName} has been logged successfully`,
+      // data.type lets the app suppress this alert when it's already in foreground
+      data:  { type: 'meal_logged', jobId: jobId || null },
+    });
+
+    const res = await fetch('https://exp.host/--/api/v2/push/send', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body,
+    });
+    const result = await res.json();
+    const status = result?.data?.status ?? result?.status;
+    console.log('[push] sent for meal:', mealName, '| status:', status);
+  } catch (e) {
+    console.warn('[push] notification failed:', e.message);
+  }
+}
 
 // ─── System prompt builder ────────────────────────────────────────────────────
 // Built per-request so it includes the user's current goals, logged totals,
@@ -68,80 +117,114 @@ function buildSystemPrompt(userProfile, foodPreferences = []) {
                  : p.goal === 'maintain' ? 'maintain their current weight'
                  : 'stay healthy';
 
-  const dietLine    = p.dietaryRestrictions?.trim()
-    ? `- Dietary restrictions: ${p.dietaryRestrictions} (NEVER suggest foods that violate these)`
-    : '';
-  const allergyLine = p.allergies?.trim()
-    ? `- Allergies: ${p.allergies} (NEVER suggest anything containing these — this is a safety requirement)`
-    : '';
+  const calTarget  = p.calorieTarget || 2000;
+  const protTarget = p.proteinTarget || 150;
+  const carbTarget = p.carbTarget    || 225;
+  const fatTarget  = p.fatTarget     || 56;
+
+  const calLogged  = p.loggedCalories || 0;
+  const protLogged = p.loggedProtein  || 0;
+  const carbLogged = p.loggedCarbs    || 0;
+  const fatLogged  = p.loggedFat      || 0;
+
+  const calLeft  = calTarget  - calLogged;
+  const protLeft = protTarget - protLogged;
+  const carbLeft = carbTarget - carbLogged;
+  const fatLeft  = fatTarget  - fatLogged;
+
+  // Describe what's actually needed today in plain English for the AI to use
+  const gapLines = [];
+  if (protLeft > 40)  gapLines.push(`protein is low (${protLeft}g still needed)`);
+  if (calLeft  > 500) gapLines.push(`calories are low (${calLeft} kcal still needed)`);
+  if (calLeft  < -200) gapLines.push(`calories are over target by ${Math.abs(calLeft)} kcal`);
+  const gapSummary = gapLines.length
+    ? `Key gaps today: ${gapLines.join(', ')}.`
+    : 'Macros are roughly on track for today.';
 
   const profileSection = p.calorieTarget ? `
-User profile:
+USER PROFILE:
 - Goal: ${goalLine}
-- Daily targets: ${p.calorieTarget} kcal | Protein ${p.proteinTarget}g | Carbs ${p.carbTarget}g | Fat ${p.fatTarget}g
-- Activity level: ${p.activityLevel || 'moderate'}
-- Already logged today: ${p.loggedCalories || 0} kcal | Protein ${p.loggedProtein || 0}g | Carbs ${p.loggedCarbs || 0}g | Fat ${p.loggedFat || 0}g
-- Remaining today: ${(p.calorieTarget || 2000) - (p.loggedCalories || 0)} kcal | Protein ${(p.proteinTarget || 150) - (p.loggedProtein || 0)}g remaining
-${dietLine}
-${allergyLine}
+- Daily targets: ${calTarget} kcal | Protein ${protTarget}g | Carbs ${carbTarget}g | Fat ${fatTarget}g
+- Activity: ${p.activityLevel || 'moderate'}
+- Logged today: ${calLogged} kcal | Protein ${protLogged}g | Carbs ${carbLogged}g | Fat ${fatLogged}g
+- Remaining: ${calLeft} kcal | Protein ${protLeft}g | Carbs ${carbLeft}g | Fat ${fatLeft}g
+- ${gapSummary}
 ` : '';
 
-  const prefSection = foodPreferences.length ? `
-Foods this user eats regularly (ranked by recency-weighted frequency — higher rank = more familiar):
-${foodPreferences.map((f, i) => `${i + 1}. ${f.name} (logged ${f.count}x)`).join('\n')}
+  const dietLine    = p.dietaryRestrictions?.trim()
+    ? `DIETARY RESTRICTIONS (hard rule, never violate): ${p.dietaryRestrictions}`
+    : '';
+  const allergyLine = p.allergies?.trim()
+    ? `ALLERGIES (safety-critical, never suggest these): ${p.allergies}`
+    : '';
+  const safetySection = (dietLine || allergyLine)
+    ? `\n${dietLine ? dietLine + '\n' : ''}${allergyLine ? allergyLine + '\n' : ''}`
+    : '';
 
-When suggesting meals or foods: prioritise these items and close variations first. Don't force them into every response, but give them clear preference when relevant. The goal is for recommendations to feel like something this specific person would actually eat, not generic advice.
+  // Food the user actually eats — use these first when suggesting anything
+  const prefSection = foodPreferences.length ? `
+FOODS THIS USER ACTUALLY EATS (ranked by how often they log them):
+${foodPreferences.slice(0, 10).map((f, i) => `${i + 1}. ${f.name} (${f.count}x logged)`).join('\n')}
+
+When suggesting food: pull from this list first. Suggest things they already eat, not random healthy foods. If none fit, suggest something close in style. Never give generic advice when you have this data.
 ` : '';
 
   // Valid imageKey values (must be one of these — used to fetch a food photo):
   const imageKeys = 'chicken, turkey, beef, steak, pork, salmon, tuna, shrimp, egg, rice, pasta, bread, oats, oatmeal, potato, sweetpotato, banana, apple, salad, broccoli, spinach, avocado, yogurt, cheese, milk, nuts, almonds, soup, pizza, burger, sandwich, sushi, tacos, coffee, smoothie, protein_shake, default';
 
-  return `You are FoodChat AI — a personal trainer and nutrition coach inside a mobile app. You talk exactly like a real trainer texting a client: short, direct, warm, specific. Never like a report or a document.
+  return `You are FoodChat AI, a nutrition coach built into a mobile app. You text like a knowledgeable friend who knows exactly what the user eats, what their goals are, and what they actually need right now. You are direct, warm, slightly playful, and never robotic.
 
-${profileSection}${prefSection}
-CRITICAL FORMAT RULES — violating these breaks the app UI:
-You are FORBIDDEN from using any markdown whatsoever. That means:
-  NO # or ## headings
-  NO ** bold ** or * italic *
-  NO - bullet points or numbered lists
-  NO --- dividers
-  NO tables
-  NO "Here's your plan:" followed by structured sections
+${profileSection}${safetySection}${prefSection}
+YOUR VOICE:
+You sound like a coach texting a client, not a nutrition report. You are specific ("grab some chicken and rice" not "eat a high-protein meal"). You reference what they actually eat when you know it. You pick up on patterns. You never pad responses with filler.
 
-INSTEAD write plain flowing sentences, like a text message from a trainer. If you need to mention multiple meals across the day, string them together naturally in a paragraph. Macro numbers can be dropped entirely or tucked in briefly at the end of a sentence in parentheses.
+RESPONSE LENGTH (strict):
+Every response is 2 to 4 sentences maximum. No exceptions.
+- Meal log confirmation: 2 sentences. Confirm it, add one quick practical note.
+- Advice or questions: 2 to 4 sentences. Get to the point immediately.
+- Never write a paragraph that could be cut in half. If you can say it in 2 sentences, use 2.
 
-WRONG (never do this):
-"### Breakfast – Egg & Oat Power Start
-- 3 scrambled eggs + 1 cup oatmeal
-- ~500 kcal | 28g protein"
+TONE EXAMPLES:
+WRONG: "You've got 163g of protein left today which is quite a lot. Here are some high-protein options you might consider..."
+RIGHT: "You've got a lot of protein left today. Go with chicken and rice or a Chipotle bowl with double chicken and you'll make a dent in it."
 
-RIGHT (always do this):
-"For breakfast knock out 3 scrambled eggs with a cup of oatmeal — that's roughly 500 cals and 28g of protein right there to get you going."
+WRONG: "That's a great choice! Eggs are an excellent source of protein and healthy fats, making them a wonderful addition to your diet."
+RIGHT: "Solid. Eggs are doing work for you right now, especially with protein still low."
 
-LENGTH:
-- Meal log confirmation: 2-3 sentences max.
-- Advice or meal plan: 1 short paragraph (5-7 sentences). Cover the whole day in that one paragraph. No sections, no headers, no lists.
-- One emoji max, only if it feels natural.
+WRONG: "Based on your remaining macros, I would suggest considering some options that align with your goals."
+RIGHT: "You're low on protein. Throw some Greek yogurt or chicken in there before the day's over."
 
-BEHAVIOUR:
+FORMAT RULES (breaking these breaks the app):
+- No markdown: no # headings, no **bold**, no *italic*, no bullet lists, no numbered lists, no --- dividers, no tables
+- No em dashes (do not use the character —)
+- No "Here's what I'd suggest:" or similar setup phrases. Just say it.
+- Plain sentences only, like a text message
 
-LOGGING RULES — read every rule before deciding what to output:
+EMOJI RULES:
+- Use 0 to 2 emojis per response
+- Vary them naturally across responses. Use food emojis, energy emojis, thumbs up, etc.
+- Do NOT use the same emoji every time
+- Do NOT use 💪 as a default. Rotate through options like 👍 🔥 ✅ 🍗 🥚 🎯 and others
+- Never force an emoji if the message doesn't call for it
 
-─── MEAL LOGGING ───
-You MUST output a <meal_log> block when the user states they already ate food OR drank a caloric beverage.
-Caloric beverages (MUST use <meal_log>): juice, soda, beer, wine, spirits, coffee with milk/sugar, latte, cappuccino, smoothie, protein shake, sports drink, energy drink, milk, oat milk — anything with calories.
+PROACTIVE COACHING:
+When the user asks how they're doing or what to eat, look at the gaps and suggest 1 or 2 specific foods they actually eat. Don't list 5 options. Pick the best 1 or 2 based on their history and what they need most right now.
+
+LOGGING RULES:
+
+MEAL LOGGING: You MUST output a <meal_log> block when the user states they already ate food OR drank a caloric beverage.
+Caloric beverages (always log): juice, soda, beer, wine, spirits, coffee with milk or sugar, latte, cappuccino, smoothie, protein shake, sports drink, energy drink, milk, oat milk.
 Trigger phrases: "I had", "I ate", "I just ate", "I just had", "I'm eating", "I'm having", "I drank [caloric drink]", "log this", "add this", "track this", "I finished".
 
-NEVER output <meal_log> for:
-- Plain water (use <water_log> instead)
-- Meal suggestions ("what should I eat", "give me a plan")
-- Nutrition questions ("how many calories in X")
+NEVER log for:
+- Plain water
+- Meal suggestions or plans
+- Nutrition questions
 - Hypothetical food ("I'm going to have", "what if I had")
-- Analysis requests ("how am I doing")
+- Analysis requests
 
-When a meal IS logged: output the <meal_log> block first, then reply in 2-3 sentences confirming it like a trainer with one practical tip.
+When logging: output the <meal_log> block first, then confirm in 2 sentences max.
 
-MEAL LOG FORMAT:
 <meal_log>
 {
   "logged": true,
@@ -153,15 +236,9 @@ MEAL LOG FORMAT:
   "imageKey": "egg"
 }
 </meal_log>
-imageKey must be one of: ${imageKeys} — pick the one that best matches the primary food. Macros must be accurate for typical serving sizes.
-
-When the user asks for meal suggestions or a plan: write one flowing paragraph. Be specific with food names and amounts. Tie suggestions to their goal (${goalLine}) and what they still need. Sound like you know them.
-
-${(p.dietaryRestrictions?.trim() || p.allergies?.trim()) ? `DIETARY RULES (non-negotiable — always enforce these regardless of what the user asks):
-${p.dietaryRestrictions?.trim() ? `- The user follows these dietary restrictions: ${p.dietaryRestrictions}. Every suggestion must respect this.` : ''}
-${p.allergies?.trim() ? `- The user is allergic to: ${p.allergies}. NEVER suggest anything containing these ingredients. This is a safety requirement — treat it like a hard rule with no exceptions.` : ''}
-
-` : ''}`;
+imageKey must be exactly one of: ${imageKeys}
+Pick the one that best matches the main food. Macros must be accurate for a normal serving size.
+`;
 }
 
 // ─── Helper: strip markdown formatting from AI text ──────────────────────────
@@ -219,7 +296,7 @@ app.get('/test', async (_req, res) => {
 
 // ─── POST /chat ───────────────────────────────────────────────────────────────
 app.post('/chat', async (req, res) => {
-  const { message, history = [], userProfile, foodPreferences = [] } = req.body;
+  const { message, history = [], userProfile, foodPreferences = [], pushToken, jobId } = req.body;
 
   if (!message || typeof message !== 'string' || !message.trim()) {
     return res.status(400).json({ error: 'message is required' });
@@ -264,6 +341,8 @@ app.post('/chat', async (req, res) => {
       };
       mealLog.push(entry);
       console.log('[chat] meal logged:', entry.name, entry.calories, 'kcal | image:', entry.imageKey);
+      // Fire-and-forget — don't block the HTTP response waiting for Expo
+      sendMealPushNotification(pushToken, meal.name, jobId).catch(() => {});
     } else if (meal) {
       console.log('[chat] <meal_log> block found but shouldLog=false (logged:', meal.logged, 'name:', meal.name, 'cal:', meal.calories, ')');
     }
@@ -293,7 +372,7 @@ app.post('/chat', async (req, res) => {
 // Accepts a base64-encoded food photo, runs it through Claude vision, and
 // returns the same shape as /chat so the frontend can handle both identically.
 app.post('/analyze-photo', async (req, res) => {
-  const { imageBase64, mimeType = 'image/jpeg', userProfile, foodPreferences = [] } = req.body;
+  const { imageBase64, mimeType = 'image/jpeg', userProfile, foodPreferences = [], pushToken } = req.body;
 
   if (!imageBase64) {
     return res.status(400).json({ error: 'imageBase64 is required' });
@@ -342,6 +421,7 @@ app.post('/analyze-photo', async (req, res) => {
       };
       mealLog.push(entry);
       console.log('[photo] meal logged:', entry.name, entry.calories, 'kcal | image:', entry.imageKey);
+      sendMealPushNotification(pushToken, meal.name, null).catch(() => {});
     }
 
     res.json({ reply: displayText, mealLogged: shouldLog, meal: shouldLog ? meal : null });
@@ -458,6 +538,45 @@ app.post('/promo/redeem', (req, res) => {
 
   console.log(`[promo] "${code}" redeemed by ${email || userId} → plan: ${entry.plan}`);
   res.json({ valid: true, plan: entry.plan });
+});
+
+// ─── POST /transcribe — voice-to-text via OpenAI Whisper ─────────────────────
+// Used by the iOS app (expo-av recording → base64 m4a → Whisper → text).
+// Requires OPENAI_API_KEY env var on Render. Falls back gracefully if missing.
+app.post('/transcribe', async (req, res) => {
+  if (!process.env.OPENAI_API_KEY) {
+    return res.status(503).json({ error: 'Transcription service not configured. Add OPENAI_API_KEY to Render environment variables.' });
+  }
+
+  const { audioBase64, mimeType = 'audio/m4a' } = req.body;
+  if (!audioBase64) return res.status(400).json({ error: 'audioBase64 is required' });
+
+  try {
+    const audioBuffer = Buffer.from(audioBase64, 'base64');
+    const blob = new Blob([audioBuffer], { type: mimeType });
+
+    const formData = new FormData();
+    formData.set('file', blob, 'recording.m4a');
+    formData.set('model', 'whisper-1');
+    formData.set('language', 'en');
+
+    const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method:  'POST',
+      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+      body:    formData,
+    });
+
+    if (!whisperRes.ok) {
+      const err = await whisperRes.json().catch(() => ({}));
+      throw new Error(err.error?.message || `Whisper error ${whisperRes.status}`);
+    }
+
+    const data = await whisperRes.json();
+    res.json({ transcript: data.text || '' });
+  } catch (err) {
+    console.error('[transcribe error]', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ─── GET / ────────────────────────────────────────────────────────────────────

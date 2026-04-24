@@ -18,9 +18,12 @@ import { useVoiceInput } from '../hooks/useVoiceInput';
 import { useApp, useTheme } from '../context/AppContext';
 import { useMealOverlay } from '../context/OverlayContext';
 import { useTts } from '../context/TtsContext';
+import { API_BASE_URL } from '../config/api';
+import { getTodayKey } from '../utils/nutrition';
+import { generateJobId, enqueueJob, removeJob, updateJob } from '../utils/jobQueue';
+import { getStoredPushToken } from '../utils/pushNotifications';
 
-// ─── Backend URL ──────────────────────────────────────────────────────────────
-const BACKEND_URL = 'http://localhost:3001';
+const BACKEND_URL = API_BASE_URL;
 
 // ─── Unique meal ID ───────────────────────────────────────────────────────────
 // Combines timestamp + random suffix so two meals logged in the same millisecond
@@ -498,7 +501,7 @@ export default function HelperScreen() {
 
     // Build a profile snapshot with today's logged totals for context
     const { userProfile, dailyLogs } = state;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getTodayKey();
     const todayLog = dailyLogs?.[today] || {};
     const profileForAI = {
       ...userProfile,
@@ -508,18 +511,43 @@ export default function HelperScreen() {
       loggedFat:      todayLog.fat      || 0,
     };
 
+    // Persist the request as a job BEFORE the fetch. If the app closes mid-flight
+    // the job stays in AsyncStorage and useJobProcessor retries it on next open.
+    const pushToken  = await getStoredPushToken();
+    const jobId      = generateJobId();
+    const jobPayload = {
+      message: trimmed, history: historySnapshot, userProfile: profileForAI,
+      foodPreferences, pushToken, jobId,
+    };
+    await enqueueJob(jobId, jobPayload);
+
+    // 35 s matches Render free-tier worst-case cold-start (20–40 s).
+    // The job was already enqueued above, so if THIS fetch times out the retry
+    // processor picks it up next time the app comes to the foreground.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 35_000);
+    console.log(`[chat] Request started — job: ${jobId}`);
+
     try {
       const res = await fetch(`${BACKEND_URL}/chat`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: trimmed, history: historySnapshot, userProfile: profileForAI, foodPreferences }),
+        body: JSON.stringify(jobPayload),
+        signal: controller.signal,
       });
+      clearTimeout(timeout);
 
+      // Non-2xx: mark job as 'failed' so the retry processor picks it up,
+      // then surface the error. Do NOT removeJob here — the server may retry OK.
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
+        await updateJob(jobId, { status: 'failed' });
         throw new Error(body.error || `Server error ${res.status}`);
       }
       const data = await res.json();
+      // Only remove the job after fully successful processing
+      await removeJob(jobId);
+      console.log(`[chat] Request completed — job: ${jobId}`);
 
       // Persist conversation so the AI has context on the next turn
       chatHistoryRef.current = [
@@ -583,14 +611,32 @@ export default function HelperScreen() {
         setMessages((prev) => [...prev, { id: Date.now() + 1, role: 'ai', text: data.reply }]);
       }
     } catch (err) {
-      console.error('[chat error]', err.message);
+      clearTimeout(timeout);
       setTyping(false);
-      const isOffline = err.message.includes('Failed to fetch') || err.message.includes('Network');
+
+      const isTimeout = err.name === 'AbortError';
+      const isOffline = !isTimeout && (
+        err.message.includes('Failed to fetch') || err.message.includes('Network')
+      );
+
+      // Mark the job as failed so useJobProcessor retries it on next foreground.
+      // AbortError (timeout): job stays 'pending' — it may already be processing
+      // on the server and the push notification will arrive when it finishes.
+      if (!isTimeout) {
+        updateJob(jobId, { status: 'failed' }).catch(() => {});
+      }
+
+      console.warn(`[chat] Request failed — job: ${jobId} — ${
+        isTimeout ? 'timed out after 35s' : err.message
+      }`);
+
       setMessages((prev) => [...prev, {
         id: Date.now() + 1, role: 'ai',
-        text: isOffline
-          ? `⚠️ Backend server is not running.\n\nOpen a terminal and run:\n\ncd backend\nnpm install\nnpm start\n\nKeep that terminal open, then try again.`
-          : `⚠️ Server error: ${err.message}`,
+        text: isTimeout
+          ? "Taking longer than expected. Your message is saved — you'll get a notification when it's processed."
+          : isOffline
+            ? "No connection right now. Your message is saved and will be sent automatically when you're back online."
+            : `⚠️ Server error: ${err.message}`,
       }]);
     }
   };
@@ -643,7 +689,7 @@ export default function HelperScreen() {
     }
 
     const { userProfile, dailyLogs } = state;
-    const today    = new Date().toISOString().slice(0, 10);
+    const today    = getTodayKey();
     const todayLog = dailyLogs?.[today] || {};
     const profileForAI = {
       ...userProfile,
@@ -653,12 +699,21 @@ export default function HelperScreen() {
       loggedFat:      todayLog.fat      || 0,
     };
 
+    const pushToken = await getStoredPushToken();
+
+    const photoController = new AbortController();
+    const photoTimeout = setTimeout(() => photoController.abort(), 30000);
+
     try {
       const res = await fetch(`${BACKEND_URL}/analyze-photo`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imageBase64: base64, mimeType, userProfile: profileForAI }),
+        // pushToken lets the backend send a notification if a meal is logged.
+        // No jobId — photo payloads are too large to store in AsyncStorage.
+        body: JSON.stringify({ imageBase64: base64, mimeType, userProfile: profileForAI, pushToken }),
+        signal: photoController.signal,
       });
+      clearTimeout(photoTimeout);
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -718,14 +773,18 @@ export default function HelperScreen() {
         setMessages((prev) => [...prev, { id: Date.now() + 1, role: 'ai', text: data.reply }]);
       }
     } catch (err) {
+      clearTimeout(photoTimeout);
       console.error('[photo error]', err.message);
       setTyping(false);
-      const isOffline = err.message.includes('Failed to fetch') || err.message.includes('Network');
+      const isTimeout = err.name === 'AbortError';
+      const isOffline = !isTimeout && (err.message.includes('Failed to fetch') || err.message.includes('Network'));
       setMessages((prev) => [...prev, {
         id: Date.now() + 1, role: 'ai',
-        text: isOffline
-          ? `⚠️ Backend server is not running.\n\nOpen a terminal and run:\n\ncd backend\nnpm install\nnpm start\n\nKeep that terminal open, then try again.`
-          : `⚠️ Photo analysis failed: ${err.message}`,
+        text: isTimeout
+          ? "⚠️ Photo analysis timed out. The server may be starting up — please try again."
+          : isOffline
+            ? "⚠️ Unable to reach the server. Check your internet connection and try again."
+            : `⚠️ Photo analysis failed: ${err.message}`,
       }]);
     }
   };
@@ -733,7 +792,7 @@ export default function HelperScreen() {
   // ─── Render ───────────────────────────────────────────────────────────────
   return (
     <SafeAreaView style={s.safe}>
-      <KeyboardAvoidingView style={{ flex: 1, marginBottom: 88 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={90}>
+      <KeyboardAvoidingView style={{ flex: 1, marginBottom: 88 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={0}>
 
         {/* ── Header ── */}
         <View style={s.header}>

@@ -3,6 +3,7 @@ import {
   View, Text, TouchableOpacity, ActivityIndicator,
   StyleSheet, Animated, Dimensions,
 } from 'react-native';
+import * as SplashScreen from 'expo-splash-screen';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { StatusBar } from 'expo-status-bar';
@@ -27,14 +28,24 @@ import { useVoiceInput }                     from './src/hooks/useVoiceInput';
 import { useNotifications }                  from './src/notifications/NotificationManager';
 import WeightReviewModal                     from './src/components/WeightReviewModal';
 import PaywallScreen                         from './src/screens/PaywallScreen';
-import { REVIEW_MODE }                       from './src/config/reviewMode';
+import { TEST_MODE }                         from './src/config/testMode';
 import { estimateWeeklyWeightChange, isWeeklyReviewDue } from './src/utils/weightEstimation';
 import { getTodayKey }                       from './src/utils/nutrition';
 import { getOrFetchFoodImage, getFoodColor } from './src/utils/imageService';
-import { speakWithElevenLabs }               from './src/utils/ttsService';
+import { speakWithElevenLabs, initAudioSession } from './src/utils/ttsService';
+import { registerForPushNotifications, getStoredPushToken } from './src/utils/pushNotifications';
+import { generateJobId, enqueueJob, removeJob, updateJob } from './src/utils/jobQueue';
+import { useJobProcessor } from './src/hooks/useJobProcessor';
 import { computeFoodPreferences }            from './src/utils/foodPreferences';
+import { API_BASE_URL }                      from './src/config/api';
+import AppLoadingScreen                      from './src/components/AppLoadingScreen';
+
+// Hold the native splash until our custom screen is ready to take over.
+SplashScreen.preventAutoHideAsync().catch(() => {});
 
 const Tab = createBottomTabNavigator();
+
+const BACKEND_URL = API_BASE_URL;
 
 // ─── Tab layout: 2 left, mic center, 2 right ─────────────────────────────────
 const LEFT_TABS = [
@@ -45,8 +56,6 @@ const RIGHT_TABS = [
   { name: 'Helper',   icon: 'sparkles-outline', iconFocused: 'sparkles' },
   { name: 'Settings', icon: 'settings-outline',  iconFocused: 'settings' },
 ];
-
-const BACKEND_URL = 'http://localhost:3001';
 
 // ─── Floating tab bar with built-in voice mic ─────────────────────────────────
 function FloatingTabBar({ state, navigation }) {
@@ -133,13 +142,35 @@ function FloatingTabBar({ state, navigation }) {
         content: m.text,
       }));
 
+      // Build job payload — includes pushToken + jobId so the backend can send a
+      // push notification and the retry processor can dedup on re-attempt.
+      const pushToken  = await getStoredPushToken();
+      const jobId      = generateJobId();
+      const jobPayload = {
+        message: trimmed, history: historyForApi, userProfile: profileForAI,
+        foodPreferences, pushToken, jobId,
+      };
+      await enqueueJob(jobId, jobPayload);
+
+      const controller = new AbortController();
+      const fetchTimer = setTimeout(() => controller.abort(), 35_000);
+      console.log(`[tab-mic] Request started — job: ${jobId}`);
+
       const res = await fetch(`${BACKEND_URL}/chat`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: trimmed, history: historyForApi, userProfile: profileForAI, foodPreferences }),
+        body: JSON.stringify(jobPayload),
+        signal: controller.signal,
       });
-      if (!res.ok) throw new Error(`Server error ${res.status}`);
+      clearTimeout(fetchTimer);
+
+      if (!res.ok) {
+        await updateJob(jobId, { status: 'failed' });
+        throw new Error(`Server error ${res.status}`);
+      }
       const data = await res.json();
+      await removeJob(jobId);
+      console.log(`[tab-mic] Request completed — job: ${jobId}`);
 
       // Speak the AI response
       if (appState.settings.voiceEnabled !== false && data.reply) {
@@ -194,16 +225,27 @@ function FloatingTabBar({ state, navigation }) {
       dispatch({ type: 'ADD_CHAT_MESSAGE', payload: aiPayload });
 
     } catch (err) {
-      console.error('[tab-mic error]', err.message);
-      const isOffline = err.message.includes('Failed to fetch') || err.message.includes('Network');
+      const isTimeout = err.name === 'AbortError';
+      const isOffline = !isTimeout && (
+        err.message.includes('Failed to fetch') || err.message.includes('Network')
+      );
+      // AbortError = timeout: job stays 'pending' — the server may still be processing it
+      // and will send a push notification when done. All other errors: mark failed so
+      // the retry processor picks it up immediately on next foreground.
+      if (!isTimeout) {
+        updateJob(jobId, { status: 'failed' }).catch(() => {});
+      }
+      console.warn(`[tab-mic] Request failed — ${isTimeout ? 'timed out after 35s' : err.message}`);
       dispatch({
         type: 'ADD_CHAT_MESSAGE',
         payload: {
           id:   `msg_${Date.now()}_err`,
           role: 'ai',
-          text: isOffline
-            ? '⚠️ Backend not running. Start it with: cd backend && npm start'
-            : `⚠️ Error: ${err.message}`,
+          text: isTimeout
+            ? "Taking longer than expected. Your message is saved — you'll get a notification when it's processed."
+            : isOffline
+              ? "No connection right now. Your message is saved and will be sent when you're back online."
+              : `⚠️ Error: ${err.message}`,
         },
       });
     } finally {
@@ -386,6 +428,24 @@ function NotificationSetup() {
   return null;
 }
 
+// ─── Audio session setup — initializes iOS playback session at app start ──────
+function AudioSetup() {
+  useEffect(() => { initAudioSession(); }, []);
+  return null;
+}
+
+// ─── Push notification setup — registers for push on first launch ─────────────
+function PushSetup() {
+  useEffect(() => { registerForPushNotifications(); }, []);
+  return null;
+}
+
+// ─── Background job processor — retries failed meal-log jobs on foreground ────
+function JobProcessor() {
+  useJobProcessor();
+  return null;
+}
+
 // ─── Main tab navigator ───────────────────────────────────────────────────────
 function AppNavigator() {
   const c                   = useTheme();
@@ -422,6 +482,9 @@ function AppNavigator() {
       {/* Root View gives absoluteFillObject a reliable full-screen anchor */}
       <View style={{ flex: 1 }}>
         <NotificationSetup />
+        <AudioSetup />
+        <PushSetup />
+        <JobProcessor />
         <StatusBar style={c.statusBar} backgroundColor={c.bg} />
         <NavigationContainer>
           <Tab.Navigator
@@ -473,27 +536,83 @@ function AuthScreens() {
 // ─── Root ─────────────────────────────────────────────────────────────────────
 function RootNavigator() {
   const { user, loading: authLoading } = useAuth();
-  const { state, stateLoaded } = useApp();
-  const c = useTheme();
+  const { state, dispatch, stateLoaded } = useApp();
 
-  // Wait for both Firebase auth AND AsyncStorage to resolve before deciding
-  if (authLoading || !stateLoaded) {
-    return (
-      <View style={{ flex: 1, backgroundColor: c.bg, justifyContent: 'center', alignItems: 'center' }}>
-        <ActivityIndicator size="large" color={c.accent} />
-      </View>
-    );
+  // TEST_MODE: track onboarding completion in session memory for the test account.
+  const [testOnboarded, setTestOnboarded] = useState(false);
+  const lastUidRef = useRef(null);
+
+  // Custom splash state — starts visible and fades out once the app is ready.
+  const [splashVisible, setSplashVisible] = useState(true);
+  const splashOpacity = useRef(new Animated.Value(1)).current;
+  const splashDoneRef = useRef(false);
+
+  // Dismiss the native splash immediately so our branded screen takes over.
+  useEffect(() => {
+    SplashScreen.hideAsync().catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const uid = user?.uid ?? null;
+    if (uid === lastUidRef.current) return;
+    lastUidRef.current = uid;
+
+    if (TEST_MODE && user?.isTestAccount) {
+      setTestOnboarded(false);
+      dispatch({
+        type: 'SET_SUBSCRIPTION',
+        payload: { status: 'none', plan: null, subscriptionId: null, customerId: null, trialEnd: null },
+      });
+    }
+  }, [user?.uid, dispatch]);
+
+  // Fade out once both Firebase auth and AsyncStorage have resolved.
+  const appReady = !authLoading && stateLoaded;
+  useEffect(() => {
+    if (!appReady || splashDoneRef.current) return;
+    splashDoneRef.current = true;
+    Animated.timing(splashOpacity, {
+      toValue:         0,
+      duration:        480,
+      useNativeDriver: true,
+    }).start(() => setSplashVisible(false));
+  }, [appReady]);
+
+  function renderContent() {
+    if (!user) return <AuthScreens />;
+
+    const isTestUser = TEST_MODE && user.isTestAccount;
+    const effectiveOnboarded = isTestUser ? testOnboarded : state.isOnboarded;
+
+    if (!effectiveOnboarded) {
+      return (
+        <OnboardingScreen
+          onComplete={isTestUser ? () => setTestOnboarded(true) : undefined}
+        />
+      );
+    }
+
+    const hasSub = ['trial', 'active', 'lifetime_free'].includes(state.subscription?.status);
+    if (!hasSub) return <PaywallScreen />;
+
+    return <AppNavigator />;
   }
 
-  if (!user)              return <AuthScreens />;
-  if (!state.isOnboarded) return <OnboardingScreen />;
+  return (
+    <View style={{ flex: 1 }}>
+      {appReady && renderContent()}
 
-  // Gate: require an active or trialing subscription before showing the app
-  // REVIEW_MODE forces hasSub = false so the paywall always appears for reviewers
-  const hasSub = !REVIEW_MODE && ['trial', 'active', 'lifetime_free'].includes(state.subscription?.status);
-  if (!hasSub)            return <PaywallScreen />;
-
-  return <AppNavigator />;
+      {/* Branded loading overlay — sits on top and fades out when the app is ready */}
+      {splashVisible && (
+        <Animated.View
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFillObject, { opacity: splashOpacity }]}
+        >
+          <AppLoadingScreen />
+        </Animated.View>
+      )}
+    </View>
+  );
 }
 
 export default function App() {
