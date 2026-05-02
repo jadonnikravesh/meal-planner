@@ -1,61 +1,162 @@
 require('dotenv').config();
 
-const express   = require('express');
-const cors      = require('cors');
-const https     = require('https');
-const fs        = require('fs');
-const path      = require('path');
-const Anthropic = require('@anthropic-ai/sdk');
+const express    = require('express');
+const cors       = require('cors');
+const https      = require('https');
+const fs         = require('fs');
+const path       = require('path');
+const Anthropic  = require('@anthropic-ai/sdk');
+const rateLimit  = require('express-rate-limit');
+const admin      = require('firebase-admin');
 
 const app  = express();
 const port = process.env.PORT || 3001;
 
-// ─── Promo code store (file-backed) ──────────────────────────────────────────
-const PROMO_FILE = path.join(__dirname, 'promo_redemptions.json');
-
-// Master list of valid codes. Set revoked: true to disable a code without
-// deleting its redemption history.
-let promoData = {
-  codes: {
-    Squidward22: { revoked: false, plan: 'lifetime_free', redemptions: [] },
-  },
-};
-
+// ─── Firebase Admin ───────────────────────────────────────────────────────────
+// Requires three env vars: FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL,
+// FIREBASE_PRIVATE_KEY (the private key with literal \n for newlines, as
+// Render stores it).
+let firebaseReady = false;
 try {
-  const raw    = fs.readFileSync(PROMO_FILE, 'utf8');
-  const loaded = JSON.parse(raw);
-  // Deep-merge so new codes in the source list aren't lost on restart,
-  // but saved revoked state and redemptions from disk take precedence.
-  if (loaded.codes) {
-    for (const [code, saved] of Object.entries(loaded.codes)) {
-      if (promoData.codes[code]) {
-        promoData.codes[code] = { ...promoData.codes[code], ...saved };
-      }
-    }
+  const { FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY } = process.env;
+  if (FIREBASE_PROJECT_ID && FIREBASE_CLIENT_EMAIL && FIREBASE_PRIVATE_KEY) {
+    admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId:   FIREBASE_PROJECT_ID,
+        clientEmail: FIREBASE_CLIENT_EMAIL,
+        // Render stores the key with literal \n — replace so the PEM is valid
+        privateKey:  FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+      }),
+    });
+    firebaseReady = true;
+    console.log('  Firebase Admin:      initialized ✓');
+  } else {
+    console.warn('  Firebase Admin:      MISSING — auth middleware will use dev bypass ✗');
+    console.warn('  Set FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY to enable token verification.');
   }
-} catch (_) {
-  // File doesn't exist yet — created on first redemption.
+} catch (err) {
+  console.warn('  Firebase Admin:      init failed:', err.message);
 }
 
-function savePromoData() {
+// ─── Auth middleware ───────────────────────────────────────────────────────────
+// Verifies the Firebase ID token sent as "Authorization: Bearer <token>".
+// In dev (firebaseReady=false), falls back to req.body.userId so local testing
+// still works without credentials. In production this must be a real token.
+async function requireAuth(req, res, next) {
+  const header = req.headers.authorization;
+
+  if (!firebaseReady) {
+    // Dev bypass — no credentials configured
+    req.uid = req.body?.userId || 'dev-user';
+    return next();
+  }
+
+  if (!header?.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Authentication required.' });
+  }
+
   try {
-    fs.writeFileSync(PROMO_FILE, JSON.stringify(promoData, null, 2), 'utf8');
+    const decoded = await admin.auth().verifyIdToken(header.slice(7));
+    req.uid = decoded.uid;
+    next();
   } catch (err) {
-    console.error('[promo] failed to persist redemptions:', err.message);
+    console.warn('[auth] token verification failed:', err.message);
+    res.status(401).json({ error: 'Invalid or expired session — please log in again.' });
   }
 }
+
+// ─── Rate limiters ────────────────────────────────────────────────────────────
+const limiter = {
+  // Global catch-all — 300 req / 15 min per IP
+  global: rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 300,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests — please slow down.' },
+  }),
+
+  // Chat — 30 req / 3 hours (Claude Opus, most expensive)
+  chat: rateLimit({
+    windowMs: 3 * 60 * 60 * 1000,
+    max: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Message limit reached — please try again in a few hours.' },
+  }),
+
+  // Vision endpoints — 10 req / hour (costly, one-shot per session)
+  vision: rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Photo analysis limit reached — try again in an hour.' },
+  }),
+
+  // TTS — 30 req / 3 hours
+  tts: rateLimit({
+    windowMs: 3 * 60 * 60 * 1000,
+    max: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Voice limit reached — please try again in a few hours.' },
+  }),
+
+};
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(cors());
 app.use(express.json({ limit: '10mb' })); // large enough for base64 audio
+app.use(limiter.global);
 
 // ─── Anthropic client ─────────────────────────────────────────────────────────
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-// ─── In-memory meal log ───────────────────────────────────────────────────────
-let mealLog = [];
+// ─── In-memory meal log (per-user) ───────────────────────────────────────────
+const mealLog = new Map(); // uid → entry[]
+
+function getUserMeals(uid) {
+  if (!mealLog.has(uid)) mealLog.set(uid, []);
+  return mealLog.get(uid);
+}
+
+// ─── Passive label-correction store ──────────────────────────────────────────
+// Tracks implicit user corrections: when a user renames a scan-detected item,
+// we record original → corrected. Once CORRECTION_THRESHOLD unique users have
+// made the same correction, it is applied automatically at inference time.
+//
+// Structure: normalisedOriginal → Map<normalisedCorrection → count>
+const _labelCorrections = new Map();
+const CORRECTION_THRESHOLD = 5;
+
+function _normLabel(n) {
+  return (n || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function recordLabelCorrection(original, corrected) {
+  const orig = _normLabel(original);
+  const corr = _normLabel(corrected);
+  if (!orig || !corr || orig === corr) return;
+  if (!_labelCorrections.has(orig)) _labelCorrections.set(orig, new Map());
+  const counts = _labelCorrections.get(orig);
+  counts.set(corr, (counts.get(corr) ?? 0) + 1);
+  console.log(`[corrections] "${orig}" → "${corr}" (n=${counts.get(corr)})`);
+}
+
+// Returns the consensus corrected label if >= CORRECTION_THRESHOLD votes exist,
+// or null if no consensus has been reached yet.
+function getConsensusLabel(name) {
+  const counts = _labelCorrections.get(_normLabel(name));
+  if (!counts) return null;
+  let best = null, bestCount = 0;
+  for (const [label, count] of counts) {
+    if (count > bestCount) { best = label; bestCount = count; }
+  }
+  return bestCount >= CORRECTION_THRESHOLD ? best : null;
+}
 
 // ─── Push notification helper ─────────────────────────────────────────────────
 // Sends an Expo push notification via the Expo Push API (no SDK needed).
@@ -106,10 +207,46 @@ async function sendMealPushNotification(pushToken, mealName, jobId) {
   }
 }
 
+// ─── Pexels image helper ──────────────────────────────────────────────────────
+// Shared by /chat, /analyze-photo, and /analyze-pantry so every response that
+// creates a food item already carries an imageUrl. This keeps the client warm-
+// call round-trip to /food-image out of the critical path.
+const PEXELS_BASE = 'https://api.pexels.com/v1/search';
+
+async function fetchPexelsImage(foodName) {
+  const key = (process.env.PEXELS_API_KEY || '').trim();
+  if (!key) {
+    console.warn('[pexels] PEXELS_API_KEY not set — skipping image fetch');
+    return null;
+  }
+  const query = (foodName || '').trim();
+  if (!query) return null;
+
+  const controller = new AbortController();
+  const timer      = setTimeout(() => controller.abort(), 4000);
+  try {
+    const url  = `${PEXELS_BASE}?query=${encodeURIComponent(query + ' food')}&per_page=1`;
+    const pRes = await fetch(url, { headers: { Authorization: key }, signal: controller.signal });
+    clearTimeout(timer);
+    if (!pRes.ok) {
+      console.warn(`[pexels] ${pRes.status} for "${query}"`);
+      return null;
+    }
+    const json     = await pRes.json();
+    const imageUrl = (json.photos || [])[0]?.src?.medium ?? null;
+    console.log(`[pexels] "${query}" → ${imageUrl ?? 'no result'}`);
+    return imageUrl;
+  } catch (err) {
+    clearTimeout(timer);
+    console.warn(`[pexels] "${query}" ${err.name === 'AbortError' ? 'timeout (4s)' : err.message}`);
+    return null;
+  }
+}
+
 // ─── System prompt builder ────────────────────────────────────────────────────
 // Built per-request so it includes the user's current goals, logged totals,
 // and their personal food history for personalised suggestions.
-function buildSystemPrompt(userProfile, foodPreferences = []) {
+function buildSystemPrompt(userProfile, foodPreferences = [], pantryItems = []) {
   const p = userProfile || {};
 
   const goalLine = p.goal === 'lose'     ? 'lose body fat'
@@ -169,12 +306,20 @@ ${foodPreferences.slice(0, 10).map((f, i) => `${i + 1}. ${f.name} (${f.count}x l
 When suggesting food: pull from this list first. Suggest things they already eat, not random healthy foods. If none fit, suggest something close in style. Never give generic advice when you have this data.
 ` : '';
 
+  // Pantry items the user has at home right now
+  const pantrySection = pantryItems.length ? `
+PANTRY (ingredients the user has at home right now):
+${pantryItems.map((i) => `- ${i.name}${i.qty ? ` (${i.qty})` : ''}`).join('\n')}
+
+PANTRY RULE: When the user asks what to eat, what to cook, or for meal ideas, build suggestions from these ingredients first. Only suggest something outside this list if nothing on it fits. Be specific — name the exact ingredients. Example: "You've got chicken breast and brown rice — that covers your protein gap perfectly tonight."
+` : '';
+
   // Valid imageKey values (must be one of these — used to fetch a food photo):
   const imageKeys = 'chicken, turkey, beef, steak, pork, salmon, tuna, shrimp, egg, rice, pasta, bread, oats, oatmeal, potato, sweetpotato, banana, apple, salad, broccoli, spinach, avocado, yogurt, cheese, milk, nuts, almonds, soup, pizza, burger, sandwich, sushi, tacos, coffee, smoothie, protein_shake, default';
 
   return `You are FoodChat AI, a nutrition coach built into a mobile app. You text like a knowledgeable friend who knows exactly what the user eats, what their goals are, and what they actually need right now. You are direct, warm, slightly playful, and never robotic.
 
-${profileSection}${safetySection}${prefSection}
+${profileSection}${safetySection}${prefSection}${pantrySection}
 YOUR VOICE:
 You sound like a coach texting a client, not a nutrition report. You are specific ("grab some chicken and rice" not "eat a high-protein meal"). You reference what they actually eat when you know it. You pick up on patterns. You never pad responses with filler.
 
@@ -212,18 +357,27 @@ When the user asks how they're doing or what to eat, look at the gaps and sugges
 
 LOGGING RULES:
 
-MEAL LOGGING: You MUST output a <meal_log> block when the user states they already ate food OR drank a caloric beverage.
+MEAL LOGGING: You MUST output a <meal_log> block when the user explicitly states they already consumed food or a caloric beverage — past tense or actively in progress.
 Caloric beverages (always log): juice, soda, beer, wine, spirits, coffee with milk or sugar, latte, cappuccino, smoothie, protein shake, sports drink, energy drink, milk, oat milk.
-Trigger phrases: "I had", "I ate", "I just ate", "I just had", "I'm eating", "I'm having", "I drank [caloric drink]", "log this", "add this", "track this", "I finished".
+Valid trigger phrases (consumption only): "I had", "I ate", "I just ate", "I just had", "I'm eating", "I'm having [right now]", "I drank [caloric drink]", "log this", "add this", "track this", "I finished".
 
-NEVER log for:
+DUAL INTENT — HIGHEST PRIORITY RULE: A single message can report food consumption AND ask a question at the same time. When a message contains a valid consumption trigger phrase ("I ate", "I had", "I just had", "I'm eating", etc.) AND also contains a question or advice request, you MUST do both: (1) output the <meal_log> block for the consumed food, AND (2) answer the question in your text response. The presence of a question, question mark, or advisory phrase ("what should I eat for the rest of the day", "what else should I have") does NOT cancel or override a clear consumption statement in the same message. Log first, then answer the question.
+Example: "I ate a burger for lunch, what should I eat for dinner?" — log the burger AND suggest dinner.
+Example: "I just had oatmeal, am I on track?" — log the oatmeal AND answer how they're doing.
+Example: "I had a protein shake, what should I eat next?" — log the shake AND give a recommendation.
+Dual-intent response format (3 sentences max): Sentence 1 confirms the log ("[Food] logged ✅ ..."). Sentences 2-3 answer the question directly. Do not drop the question answer to stay under the normal 2-sentence meal-log limit.
+
+NEVER output a <meal_log> block when the message contains NO consumption statement at all — i.e., the entire message is ONLY a question, plan, or hypothetical with no report of food already eaten:
+- Pure questions with no consumption: "what should I eat", "what can I have for dinner", "what's a good breakfast", "meal ideas", "meal plan", "what to eat"
+- Pure future intentions (no past consumption): "I'm going to have", "I plan to eat", "I'll probably eat", "maybe I'll have", "thinking about eating"
+- Pure hypotheticals: "what if I ate", "if I had", "is X good for me", "how many calories in X"
+- Pure analysis with no consumption: "how am I doing", "what are my macros", "am I on track"
 - Plain water
-- Meal suggestions or plans
-- Nutrition questions
-- Hypothetical food ("I'm going to have", "what if I had")
-- Analysis requests
 
-When logging: output the <meal_log> block first, then confirm in 2 sentences max.
+DEFAULT TO NOT LOGGING: Only skip logging when there is NO consumption statement anywhere in the message. If the message contains a clear consumption trigger phrase ("I ate", "I had", "I just had", etc.), ALWAYS output the <meal_log> block — even if the same message also contains a question, a "?" or advice-seeking language.
+
+When logging: output the <meal_log> block first, then confirm in 1-2 sentences max.
+Meal confirmation format (strict): Start with the exact food name + "logged ✅". Example: "Chicken salad logged ✅ You're sitting at 38g protein so far today." NEVER say "Your meal has been logged" or any generic phrasing. Always lead with the food name.
 
 <meal_log>
 {
@@ -295,8 +449,8 @@ app.get('/test', async (_req, res) => {
 });
 
 // ─── POST /chat ───────────────────────────────────────────────────────────────
-app.post('/chat', async (req, res) => {
-  const { message, history = [], userProfile, foodPreferences = [], pushToken, jobId } = req.body;
+app.post('/chat', limiter.chat, requireAuth, async (req, res) => {
+  const { message, history = [], userProfile, foodPreferences = [], pantryItems = [], pushToken, jobId } = req.body;
 
   if (!message || typeof message !== 'string' || !message.trim()) {
     return res.status(400).json({ error: 'message is required' });
@@ -311,7 +465,7 @@ app.post('/chat', async (req, res) => {
     const response = await anthropic.messages.create({
       model:      'claude-opus-4-6',
       max_tokens: 1024,
-      system:     buildSystemPrompt(userProfile, foodPreferences),
+      system:     buildSystemPrompt(userProfile, foodPreferences, pantryItems),
       messages,
     });
 
@@ -328,7 +482,11 @@ app.post('/chat', async (req, res) => {
     const meal      = parseMealLog(aiText);
     const shouldLog = !!(meal && meal.logged === true && meal.name && meal.calories > 0);
 
+    let mealImageUrl = null;
     if (shouldLog) {
+      // Fetch image while we still have a warm connection — avoids a cold-start
+      // round-trip from the client to /food-image after receiving this response.
+      mealImageUrl = await fetchPexelsImage(meal.name);
       const entry = {
         id:        Date.now(),
         time:      new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -338,9 +496,10 @@ app.post('/chat', async (req, res) => {
         carbs:     meal.carbs    ?? 0,
         fat:       meal.fat      ?? 0,
         imageKey:  meal.imageKey ?? 'default',
+        imageUrl:  mealImageUrl,
       };
-      mealLog.push(entry);
-      console.log('[chat] meal logged:', entry.name, entry.calories, 'kcal | image:', entry.imageKey);
+      getUserMeals(req.uid).push(entry);
+      console.log('[chat] meal logged:', entry.name, entry.calories, 'kcal | imageUrl:', mealImageUrl ?? 'none');
       // Fire-and-forget — don't block the HTTP response waiting for Expo
       sendMealPushNotification(pushToken, meal.name, jobId).catch(() => {});
     } else if (meal) {
@@ -350,7 +509,7 @@ app.post('/chat', async (req, res) => {
     res.json({
       reply:      displayText,
       mealLogged: shouldLog,
-      meal:       shouldLog ? meal : null,
+      meal:       shouldLog ? { ...meal, imageUrl: mealImageUrl } : null,
     });
 
   } catch (err) {
@@ -371,7 +530,7 @@ app.post('/chat', async (req, res) => {
 // ─── POST /analyze-photo ─────────────────────────────────────────────────────
 // Accepts a base64-encoded food photo, runs it through Claude vision, and
 // returns the same shape as /chat so the frontend can handle both identically.
-app.post('/analyze-photo', async (req, res) => {
+app.post('/analyze-photo', limiter.vision, requireAuth, async (req, res) => {
   const { imageBase64, mimeType = 'image/jpeg', userProfile, foodPreferences = [], pushToken } = req.body;
 
   if (!imageBase64) {
@@ -408,7 +567,9 @@ app.post('/analyze-photo', async (req, res) => {
     const meal      = parseMealLog(aiText);
     const shouldLog = !!(meal && meal.logged === true && meal.name && meal.calories > 0);
 
+    let mealImageUrl = null;
     if (shouldLog) {
+      mealImageUrl = await fetchPexelsImage(meal.name);
       const entry = {
         id:       Date.now(),
         time:     new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -418,13 +579,14 @@ app.post('/analyze-photo', async (req, res) => {
         carbs:    meal.carbs    ?? 0,
         fat:      meal.fat      ?? 0,
         imageKey: meal.imageKey ?? 'default',
+        imageUrl: mealImageUrl,
       };
-      mealLog.push(entry);
-      console.log('[photo] meal logged:', entry.name, entry.calories, 'kcal | image:', entry.imageKey);
+      getUserMeals(req.uid).push(entry);
+      console.log('[photo] meal logged:', entry.name, entry.calories, 'kcal | imageUrl:', mealImageUrl ?? 'none');
       sendMealPushNotification(pushToken, meal.name, null).catch(() => {});
     }
 
-    res.json({ reply: displayText, mealLogged: shouldLog, meal: shouldLog ? meal : null });
+    res.json({ reply: displayText, mealLogged: shouldLog, meal: shouldLog ? { ...meal, imageUrl: mealImageUrl } : null });
 
   } catch (err) {
     console.error('[/analyze-photo error] status=%s message=%s detail=%j', err.status, err.message, err.error ?? err);
@@ -438,11 +600,213 @@ app.post('/analyze-photo', async (req, res) => {
   }
 });
 
+// ─── POST /analyze-pantry ────────────────────────────────────────────────────
+// Accepts a base64 pantry/grocery photo and returns structured detected items.
+// Each item: { name, quantity, category, confidence }.
+app.post('/analyze-pantry', limiter.vision, requireAuth, async (req, res) => {
+  const { imageBase64, mimeType = 'image/jpeg' } = req.body;
+
+  if (!imageBase64) {
+    return res.status(400).json({ error: 'imageBase64 is required', items: [] });
+  }
+
+  console.log('[analyze-pantry] image received, sending to Claude vision...');
+
+  try {
+    const response = await anthropic.messages.create({
+      model:      'claude-opus-4-6',
+      max_tokens: 1024,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type:   'image',
+            source: { type: 'base64', media_type: mimeType, data: imageBase64 },
+          },
+          {
+            type: 'text',
+            text: `Analyze this image and identify every food or grocery item visible. Include ALL items — even if you are not very sure, include them with a lower confidence score. Do NOT skip items just because you are uncertain.
+
+Return ONLY valid JSON in this exact format — no explanations, no markdown, no extra text:
+
+{
+  "items": [
+    {
+      "name": "Clean common name, no brand (e.g. Chicken Breast, Whole Milk, Baby Spinach)",
+      "quantity": "Estimated quantity as a string, or null if unclear",
+      "category": "protein | carbs | fat | dairy | produce | snack | other",
+      "confidence": 0.0
+    }
+  ]
+}
+
+Rules:
+- confidence is a float from 0.0 to 1.0 — use 0.3–0.5 for uncertain items, NOT 0.0 or omit them
+- ALWAYS include items you can partially see or guess — never omit due to uncertainty
+- Return up to 20 items
+- Only return { "items": [] } if the image contains absolutely no food whatsoever
+- Output ONLY the JSON object above, nothing else`,
+          },
+        ],
+      }],
+    });
+
+    const raw = response.content[0]?.text ?? '';
+    console.log('[analyze-pantry] raw response:', raw);
+
+    let allItems = [];
+
+    // Attempt 1: extract outermost JSON object
+    try {
+      const match = raw.match(/\{[\s\S]*\}/);
+      if (match) {
+        const parsed = JSON.parse(match[0]);
+        if (Array.isArray(parsed.items)) {
+          allItems = parsed.items;
+        }
+      }
+    } catch (_) {}
+
+    // Attempt 2: extract JSON array directly (in case model omitted the wrapper)
+    if (!allItems.length) {
+      try {
+        const match = raw.match(/\[[\s\S]*\]/);
+        if (match) {
+          const parsed = JSON.parse(match[0]);
+          if (Array.isArray(parsed)) allItems = parsed;
+        }
+      } catch (_) {}
+    }
+
+    // Attempt 3: salvage individual item objects from a truncated/partial response
+    if (!allItems.length) {
+      const objectMatches = raw.match(/\{[^{}]*"name"\s*:\s*"[^"]+?"[^{}]*\}/g) || [];
+      for (const chunk of objectMatches) {
+        try {
+          const obj = JSON.parse(chunk);
+          if (typeof obj.name === 'string') allItems.push(obj);
+        } catch (_) {}
+      }
+      if (allItems.length) {
+        console.log(`[analyze-pantry] salvaged ${allItems.length} items from partial JSON`);
+      }
+    }
+
+    if (!allItems.length) {
+      console.warn('[analyze-pantry] could not parse any items from response');
+    }
+
+    // Accept all items with a valid name — no confidence floor.
+    // Apply consensus label corrections where they exist.
+    const items = allItems
+      .filter((i) => i && typeof i.name === 'string' && i.name.trim())
+      .map((i) => {
+        const raw       = i.name.trim();
+        const consensus = getConsensusLabel(raw);
+        if (consensus) console.log(`[analyze-pantry] consensus override: "${raw}" → "${consensus}"`);
+        return {
+          name:       consensus ?? raw,
+          quantity:   typeof i.quantity === 'string' && i.quantity.trim() ? i.quantity.trim() : null,
+          category:   typeof i.category === 'string' ? i.category.toLowerCase().trim() : 'other',
+          confidence: typeof i.confidence === 'number' ? i.confidence : 0.5,
+        };
+      });
+
+    console.log(
+      `[analyze-pantry] detected ${items.length} items:`,
+      items.map((i) => `${i.name} (${(i.confidence * 100).toFixed(0)}%)`).join(', ') || '(none)',
+    );
+
+    // Fetch Pexels images for all items in parallel (4 s cap each).
+    // Promise.allSettled — one failure never blocks the others.
+    const imageResults = await Promise.allSettled(items.map((i) => fetchPexelsImage(i.name)));
+    const itemsWithImages = items.map((item, idx) => ({
+      ...item,
+      imageUrl: imageResults[idx].status === 'fulfilled' ? (imageResults[idx].value ?? null) : null,
+    }));
+
+    const imgSummary = itemsWithImages.map((i) => `${i.name}:${i.imageUrl ? 'ok' : 'none'}`).join(', ');
+    console.log(`[analyze-pantry] images fetched — ${imgSummary}`);
+    console.log(`[analyze-pantry] returning ${itemsWithImages.length} items with imageUrl`);
+
+    res.json({ items: itemsWithImages });
+  } catch (err) {
+    console.error('[/analyze-pantry error]', err.message);
+    res.status(500).json({ error: err.message, items: [] });
+  }
+});
+
+// ─── POST /corrections/label ─────────────────────────────────────────────────
+// Records an implicit label correction from a user action (rename in scan
+// confirm modal, or manual item edit). Fire-and-forget from the client.
+app.post('/corrections/label', requireAuth, (req, res) => {
+  const { original, corrected } = req.body;
+  if (typeof original !== 'string' || typeof corrected !== 'string') {
+    return res.status(400).json({ ok: false });
+  }
+  recordLabelCorrection(original, corrected);
+  res.json({ ok: true });
+});
+
+// ─── GET /food-image ─────────────────────────────────────────────────────────
+// Pexels proxy — keeps the API key server-side.
+// Query params: q (search string), count (default 8, max 20)
+// Used by imageService.js for the corrections/browse/candidate flows.
+app.get('/food-image', async (req, res) => {
+  const q     = (req.query.q || '').trim();
+  const count = Math.min(parseInt(req.query.count, 10) || 8, 20);
+
+  if (!q) return res.status(400).json({ error: 'q is required', photos: [] });
+
+  const key = (process.env.PEXELS_API_KEY || '').trim();
+  if (!key) {
+    console.error('[food-image] PEXELS_API_KEY is not set — add it in the Render dashboard under Environment');
+    return res.status(503).json({ error: 'Image service not configured', photos: [] });
+  }
+
+  console.log(`[food-image] query="${q}" count=${count}`);
+
+  const controller    = new AbortController();
+  const pexelsTimeout = setTimeout(() => controller.abort(), 6000);
+
+  try {
+    const url  = `${PEXELS_BASE}?query=${encodeURIComponent(q)}&per_page=${count}`;
+    const pRes = await fetch(url, { headers: { Authorization: key }, signal: controller.signal });
+    clearTimeout(pexelsTimeout);
+
+    if (!pRes.ok) {
+      const body = await pRes.text().catch(() => '');
+      console.error(`[food-image] Pexels ${pRes.status} for "${q}":`, body.slice(0, 200));
+      return res.status(502).json({ error: `Pexels ${pRes.status}`, photos: [] });
+    }
+
+    const json = await pRes.json();
+    const raw  = json.photos || [];
+
+    const photos = raw
+      .filter((p) => p?.src?.medium)
+      .map((p) => ({
+        id:    String(p.id),
+        uri:   p.src.medium,
+        uriHd: p.src.large || p.src.medium,
+        alt:   p.alt || q,
+      }));
+
+    console.log(`[food-image] ${photos.length}/${raw.length} photos for "${q}" | first: ${photos[0]?.uri ?? 'none'}`);
+    res.json({ photos });
+  } catch (err) {
+    clearTimeout(pexelsTimeout);
+    const isTimeout = err.name === 'AbortError';
+    console.error('[food-image]', isTimeout ? 'timeout (6s) for' : 'error for', `"${q}":`, isTimeout ? '' : err.message);
+    res.status(isTimeout ? 504 : 500).json({ error: isTimeout ? 'Upstream timeout' : err.message, photos: [] });
+  }
+});
+
 // ─── GET /meals ───────────────────────────────────────────────────────────────
-app.get('/meals', (req, res) => res.json({ meals: mealLog }));
+app.get('/meals', requireAuth, (req, res) => res.json({ meals: getUserMeals(req.uid) }));
 
 // ─── DELETE /meals ────────────────────────────────────────────────────────────
-app.delete('/meals', (req, res) => { mealLog = []; res.json({ ok: true }); });
+app.delete('/meals', requireAuth, (req, res) => { mealLog.set(req.uid, []); res.json({ ok: true }); });
 
 // ─── POST /tts ────────────────────────────────────────────────────────────────
 // Strips emojis, sends text to ElevenLabs, returns base64 audio.
@@ -459,7 +823,7 @@ function stripEmojis(text) {
     .trim();
 }
 
-app.post('/tts', async (req, res) => {
+app.post('/tts', limiter.tts, requireAuth, async (req, res) => {
   const { text } = req.body;
   if (!text?.trim()) return res.status(400).json({ error: 'text is required' });
 
@@ -517,66 +881,10 @@ app.post('/tts', async (req, res) => {
 });
 
 // ─── POST /promo/redeem ───────────────────────────────────────────────────────
-// Validates a promo code and records the redemption.
-// Returns { valid: true, plan } on success or { valid: false, error } on failure.
-// To revoke a code: open backend/promo_redemptions.json and set "revoked": true.
-app.post('/promo/redeem', (req, res) => {
-  const { code, userId, email } = req.body;
-  if (!code) return res.status(400).json({ valid: false, error: 'code is required' });
-
-  const entry = promoData.codes[code];
-  if (!entry || entry.revoked) {
-    return res.json({ valid: false, error: 'Invalid code' });
-  }
-
-  entry.redemptions.push({
-    userId:      userId    || '',
-    email:       email     || '',
-    redeemedAt:  new Date().toISOString(),
-  });
-  savePromoData();
-
-  console.log(`[promo] "${code}" redeemed by ${email || userId} → plan: ${entry.plan}`);
-  res.json({ valid: true, plan: entry.plan });
-});
-
-// ─── POST /transcribe — voice-to-text via OpenAI Whisper ─────────────────────
-// Used by the iOS app (expo-av recording → base64 m4a → Whisper → text).
-// Requires OPENAI_API_KEY env var on Render. Falls back gracefully if missing.
-app.post('/transcribe', async (req, res) => {
-  if (!process.env.OPENAI_API_KEY) {
-    return res.status(503).json({ error: 'Transcription service not configured. Add OPENAI_API_KEY to Render environment variables.' });
-  }
-
-  const { audioBase64, mimeType = 'audio/m4a' } = req.body;
-  if (!audioBase64) return res.status(400).json({ error: 'audioBase64 is required' });
-
-  try {
-    const audioBuffer = Buffer.from(audioBase64, 'base64');
-    const blob = new Blob([audioBuffer], { type: mimeType });
-
-    const formData = new FormData();
-    formData.set('file', blob, 'recording.m4a');
-    formData.set('model', 'whisper-1');
-    formData.set('language', 'en');
-
-    const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-      method:  'POST',
-      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-      body:    formData,
-    });
-
-    if (!whisperRes.ok) {
-      const err = await whisperRes.json().catch(() => ({}));
-      throw new Error(err.error?.message || `Whisper error ${whisperRes.status}`);
-    }
-
-    const data = await whisperRes.json();
-    res.json({ transcript: data.text || '' });
-  } catch (err) {
-    console.error('[transcribe error]', err.message);
-    res.status(500).json({ error: err.message });
-  }
+// Promo code redemption is disabled for App Store compliance.
+// Premium access is exclusively granted through Apple In-App Purchase.
+app.post('/promo/redeem', requireAuth, (_req, res) => {
+  res.json({ valid: false, error: 'Promo codes are not currently available.' });
 });
 
 // ─── GET / ────────────────────────────────────────────────────────────────────
@@ -589,9 +897,11 @@ app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 app.listen(port, () => {
   const anthropicOk   = !!process.env.ANTHROPIC_API_KEY;
   const elevenLabsOk  = !!process.env.ELEVENLABS_API_KEY;
+  const pexelsOk      = !!process.env.PEXELS_API_KEY;
   console.log(`\nFoodChat AI backend running on http://localhost:${port}`);
   console.log(`  ANTHROPIC_API_KEY:   ${anthropicOk  ? 'loaded ✓' : 'MISSING ✗ — check backend/.env'}`);
   console.log(`  ELEVENLABS_API_KEY:  ${elevenLabsOk ? 'loaded ✓' : 'MISSING ✗ — TTS will fail'}`);
+  console.log(`  PEXELS_API_KEY:      ${pexelsOk     ? 'loaded ✓' : 'MISSING ✗ — food images will not load'}`);
   console.log(`  ElevenLabs voice:    ${ELEVENLABS_VOICE_ID}`);
   console.log('  POST /tts     — ElevenLabs text-to-speech');
   console.log('  POST /chat    — AI assistant');
