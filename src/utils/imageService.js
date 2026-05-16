@@ -1,15 +1,5 @@
-/**
- * imageService.js
- *
- * All food images are served by the Pexels API.
- * An in-memory session cache prevents redundant API calls within a session.
- * User-confirmed image selections are persisted via imageCorrections.js.
- */
-
 import { getFoodRecord } from './imageCorrections';
-
-const PEXELS_KEY  = 'Tgj7UUSwtWrMofAC9SQiPuDGR3y7DWDmyvzTwSp43HmyTtblYv3LQuUE';
-const PEXELS_BASE = 'https://api.pexels.com/v1/search';
+import { API_BASE_URL } from '../config/api';
 
 // Per-session in-memory cache: normalised food name → Photo[]
 const _cache = {};
@@ -18,10 +8,6 @@ function normKey(name) {
   return (name || '').trim().toLowerCase();
 }
 
-/**
- * Build a search query that reliably surfaces food-relevant Pexels photos.
- * Appends a context suffix so generic names ("coffee", "soup") land on food shots.
- */
 function buildQuery(foodName) {
   const n = foodName.trim().toLowerCase();
   if (/shake|smoothie|juice|latte|espresso|cappuccino|americano/.test(n))
@@ -39,72 +25,75 @@ function buildQuery(foodName) {
   return `${n} food meal`;
 }
 
-/**
- * Call the Pexels search endpoint.
- * Returns an array of { id, uri (medium ~350px), uriHd (large ~940px), alt }.
- */
-async function fetchFromPexels(query, count = 8) {
-  try {
-    const url = `${PEXELS_BASE}?query=${encodeURIComponent(query)}&per_page=${count}&size=medium`;
-    const res = await fetch(url, { headers: { Authorization: PEXELS_KEY } });
-    if (!res.ok) {
-      console.warn('[Pexels] HTTP', res.status, '–', query);
+async function fetchFromBackend(query, count = 8) {
+  const url = `${API_BASE_URL}/food-image?q=${encodeURIComponent(query)}&count=${count}`;
+  console.log(`[imageService] /food-image request: "${query}" (count=${count})`);
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 9000);
+    try {
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
+      console.log(`[imageService] /food-image response: HTTP ${res.status} for "${query}" attempt ${attempt}`);
+
+      let json;
+      try {
+        json = await res.json();
+      } catch {
+        console.warn(`[imageService] non-JSON body (HTTP ${res.status}) for "${query}" attempt ${attempt} — backend may not have /food-image route deployed`);
+        if (attempt < 2) { await new Promise((r) => setTimeout(r, 1500)); continue; }
+        return [];
+      }
+
+      if (!res.ok) {
+        console.warn(`[imageService] backend error ${res.status} for "${query}":`, json.error ?? '(no message)');
+        if (attempt < 2 && res.status >= 500) { await new Promise((r) => setTimeout(r, 1500)); continue; }
+        return [];
+      }
+
+      const photos = json.photos || [];
+      const firstUri = photos[0]?.uri ?? null;
+      console.log(`[imageService] ${photos.length} photos for "${query}" | first: ${firstUri ?? 'none'}`);
+      if (firstUri) console.log(`[imageService] iOS will load: ${firstUri}`);
+      return photos;
+    } catch (err) {
+      clearTimeout(timer);
+      const label = err.name === 'AbortError' ? 'timeout (9s)' : `network error: ${err.message}`;
+      console.warn(`[imageService] ${label} for "${query}" attempt ${attempt}`);
+      if (attempt < 2) { await new Promise((r) => setTimeout(r, 1500)); continue; }
       return [];
     }
-    const json = await res.json();
-    return (json.photos || []).map((p) => ({
-      id:    String(p.id),
-      uri:   p.src.medium,
-      uriHd: p.src.large ?? p.src.medium,
-      alt:   p.alt || query,
-    }));
-  } catch (err) {
-    console.warn('[Pexels] fetch error:', err.message);
-    return [];
   }
+  return [];
 }
 
-/**
- * Return cached photos for a food name, fetching from Pexels if the cache
- * holds fewer entries than `needed`.
- */
 async function ensureCached(foodName, needed = 8) {
   const k = normKey(foodName);
   if ((_cache[k]?.length ?? 0) >= needed) return _cache[k];
-  const photos = await fetchFromPexels(buildQuery(foodName), needed);
+  const photos = await fetchFromBackend(buildQuery(foodName), needed);
   if (photos.length) _cache[k] = photos;
   return photos;
 }
 
 // ─── Public API ────────────────────────────────────────────────────────────────
 
-/**
- * Get or fetch the primary image for a food name.
- *
- * Priority:
- *   1. Verified user-confirmed image (imageCorrections store, ≥5 yes votes)
- *   2. Previously stored user selection (imageCorrections store)
- *   3. First Pexels result for the food name (session-cached)
- *
- * @returns {{ uri: string|null, confidence: 'verified'|'high'|'low' }}
- */
 export async function getOrFetchFoodImage(foodName) {
   const record = await getFoodRecord(foodName);
   if (record?.uri) {
+    console.log(`[imageService] "${foodName}" → corrections cache (${record.verified ? 'verified' : 'stored'}): ${record.uri}`);
     return { uri: record.uri, confidence: record.verified ? 'verified' : 'high' };
   }
   const photos = await ensureCached(foodName, 8);
   const uri    = photos[0]?.uri ?? null;
+  if (uri) {
+    console.log(`[imageService] "${foodName}" → Pexels: ${uri}`);
+  } else {
+    console.warn(`[imageService] "${foodName}" → NO IMAGE (Pexels returned empty — check PEXELS_API_KEY on Render)`);
+  }
   return { uri, confidence: uri ? 'high' : 'low' };
 }
 
-/**
- * Returns 2–4 Pexels candidate images for the alternatives grid.
- * The currently-shown image (excludeUri) is filtered out so every
- * alternative is genuinely different.
- *
- * @returns {Array<{ key, label, uri, uriHd }>}
- */
 export async function getCandidateImages(foodName, excludeUri = null, maxCount = 4) {
   const photos = await ensureCached(foodName, maxCount + 2);
   return photos
@@ -118,14 +107,8 @@ export async function getCandidateImages(foodName, excludeUri = null, maxCount =
     }));
 }
 
-/**
- * Live Pexels search — used by the browse screen when the user types a query.
- * Automatically appends "food" context so arbitrary terms return food photos.
- *
- * @returns {Array<{ key, label, uri, uriHd }>}
- */
 export async function searchFoodImages(query, count = 12) {
-  const photos = await fetchFromPexels(`${query.trim()} food`, count);
+  const photos = await fetchFromBackend(`${query.trim()} food`, count);
   return photos.map((p) => ({
     key:   p.id,
     label: query,
@@ -146,15 +129,8 @@ const CURATED_FOODS = [
   'smoothie bowl', 'protein shake',
 ];
 
-let _browseCache = null; // module-level cache — survives screen navigations
+let _browseCache = null;
 
-/**
- * Load the curated browse grid.
- * Each food fetches 1 Pexels thumbnail; results are module-cached so
- * re-opening the browse screen is instant.
- *
- * @returns {Array<{ key, label, uri, uriHd }>}
- */
 export async function loadBrowseImages() {
   if (_browseCache) return _browseCache;
 
@@ -176,7 +152,6 @@ export async function loadBrowseImages() {
 }
 
 // ─── Color helpers ─────────────────────────────────────────────────────────────
-// Background colors for meal cards while images load (no Pexels needed).
 
 const FOOD_COLORS = {
   chicken: '#3A2A10', turkey: '#3A2A10',
@@ -201,10 +176,6 @@ export function getFoodColor(foodName) {
   return FOOD_COLORS[key] || FOOD_COLORS.default;
 }
 
-/**
- * Synchronous stub kept for backward compatibility with foodParser.js.
- * Returns null URI — HelperScreen resolves the real image via getOrFetchFoodImage.
- */
 export function getFoodImageData(foodName) {
   return {
     uri:        null,

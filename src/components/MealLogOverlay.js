@@ -15,7 +15,7 @@ const MAX_H   = H * 0.72;                  // card never taller than 72% of scre
 
 // Particle burst — 8 dots shoot outward from the checkmark
 const ANGLES   = [0, 45, 90, 135, 180, 225, 270, 315];
-const P_COLORS = ['#7C6FE0', '#4CAF50', '#FF6B00', '#E86B6B', '#4E8FD9', '#D4A557', '#FF69B4', '#00BCD4'];
+const P_COLORS = ['#5E8C61', '#4CAF50', '#D97745', '#C0504A', '#4A80C4', '#B8893A', '#D97745', '#5E8C61'];
 const P_DIST   = 55;
 
 export default function MealLogOverlay({ visible, meal, onClose }) {
@@ -268,7 +268,7 @@ const styles = StyleSheet.create({
   },
   imageWrap: {
     height:          IMG_H,
-    backgroundColor: '#0E0E14',
+    backgroundColor: '#EDE8DF',
   },
   calBadge: {
     position:          'absolute',
@@ -293,7 +293,7 @@ const styles = StyleSheet.create({
     position:    'absolute',
     width: 72, height: 72, borderRadius: 36,
     borderWidth: 2.5,
-    borderColor: '#4CAF50',
+    borderColor: '#5E8C61',
   },
   particle: {
     position:    'absolute',
@@ -301,10 +301,10 @@ const styles = StyleSheet.create({
   },
   checkCircle: {
     width: 72, height: 72, borderRadius: 36,
-    backgroundColor:  '#4CAF50',
+    backgroundColor:  '#5E8C61',
     justifyContent:   'center',
     alignItems:       'center',
-    shadowColor:      '#4CAF50',
+    shadowColor:      '#5E8C61',
     shadowOffset:     { width: 0, height: 0 },
     shadowOpacity:    1,
     shadowRadius:     24,

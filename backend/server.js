@@ -65,6 +65,15 @@ async function requireAuth(req, res, next) {
   }
 }
 
+// Rejects AI requests from clients that haven't obtained user consent.
+// This is a backend enforcement layer — the frontend also gates at the UI level.
+function requireAIConsent(req, res, next) {
+  if (req.body?.userAIConsent !== true) {
+    return res.status(403).json({ error: 'AI data consent required. Please accept the data usage notice in the app.' });
+  }
+  next();
+}
+
 // ─── Rate limiters ────────────────────────────────────────────────────────────
 const limiter = {
   // Global catch-all — 300 req / 15 min per IP
@@ -317,7 +326,7 @@ PANTRY RULE: When the user asks what to eat, what to cook, or for meal ideas, bu
   // Valid imageKey values (must be one of these — used to fetch a food photo):
   const imageKeys = 'chicken, turkey, beef, steak, pork, salmon, tuna, shrimp, egg, rice, pasta, bread, oats, oatmeal, potato, sweetpotato, banana, apple, salad, broccoli, spinach, avocado, yogurt, cheese, milk, nuts, almonds, soup, pizza, burger, sandwich, sushi, tacos, coffee, smoothie, protein_shake, default';
 
-  return `You are FoodChat AI, a nutrition coach built into a mobile app. You text like a knowledgeable friend who knows exactly what the user eats, what their goals are, and what they actually need right now. You are direct, warm, slightly playful, and never robotic.
+  return `You are Shred AI, a nutrition coach built into a mobile app. You text like a knowledgeable friend who knows exactly what the user eats, what their goals are, and what they actually need right now. You are direct, warm, slightly playful, and never robotic.
 
 ${profileSection}${safetySection}${prefSection}${pantrySection}
 YOUR VOICE:
@@ -449,7 +458,7 @@ app.get('/test', async (_req, res) => {
 });
 
 // ─── POST /chat ───────────────────────────────────────────────────────────────
-app.post('/chat', limiter.chat, requireAuth, async (req, res) => {
+app.post('/chat', limiter.chat, requireAuth, requireAIConsent, async (req, res) => {
   const { message, history = [], userProfile, foodPreferences = [], pantryItems = [], pushToken, jobId } = req.body;
 
   if (!message || typeof message !== 'string' || !message.trim()) {
@@ -530,7 +539,7 @@ app.post('/chat', limiter.chat, requireAuth, async (req, res) => {
 // ─── POST /analyze-photo ─────────────────────────────────────────────────────
 // Accepts a base64-encoded food photo, runs it through Claude vision, and
 // returns the same shape as /chat so the frontend can handle both identically.
-app.post('/analyze-photo', limiter.vision, requireAuth, async (req, res) => {
+app.post('/analyze-photo', limiter.vision, requireAuth, requireAIConsent, async (req, res) => {
   const { imageBase64, mimeType = 'image/jpeg', userProfile, foodPreferences = [], pushToken } = req.body;
 
   if (!imageBase64) {
@@ -603,7 +612,7 @@ app.post('/analyze-photo', limiter.vision, requireAuth, async (req, res) => {
 // ─── POST /analyze-pantry ────────────────────────────────────────────────────
 // Accepts a base64 pantry/grocery photo and returns structured detected items.
 // Each item: { name, quantity, category, confidence }.
-app.post('/analyze-pantry', limiter.vision, requireAuth, async (req, res) => {
+app.post('/analyze-pantry', limiter.vision, requireAuth, requireAIConsent, async (req, res) => {
   const { imageBase64, mimeType = 'image/jpeg' } = req.body;
 
   if (!imageBase64) {
@@ -888,7 +897,7 @@ app.post('/promo/redeem', requireAuth, (_req, res) => {
 });
 
 // ─── GET / ────────────────────────────────────────────────────────────────────
-app.get('/', (_req, res) => res.json({ status: 'FoodChat AI backend running' }));
+app.get('/', (_req, res) => res.json({ status: 'Shred AI backend running' }));
 
 // ─── GET /health ──────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
@@ -898,7 +907,7 @@ app.listen(port, () => {
   const anthropicOk   = !!process.env.ANTHROPIC_API_KEY;
   const elevenLabsOk  = !!process.env.ELEVENLABS_API_KEY;
   const pexelsOk      = !!process.env.PEXELS_API_KEY;
-  console.log(`\nFoodChat AI backend running on http://localhost:${port}`);
+  console.log(`\nShred AI backend running on http://localhost:${port}`);
   console.log(`  ANTHROPIC_API_KEY:   ${anthropicOk  ? 'loaded ✓' : 'MISSING ✗ — check backend/.env'}`);
   console.log(`  ELEVENLABS_API_KEY:  ${elevenLabsOk ? 'loaded ✓' : 'MISSING ✗ — TTS will fail'}`);
   console.log(`  PEXELS_API_KEY:      ${pexelsOk     ? 'loaded ✓' : 'MISSING ✗ — food images will not load'}`);

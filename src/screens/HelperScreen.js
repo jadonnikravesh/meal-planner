@@ -13,15 +13,20 @@ import { getOrFetchFoodImage, getFoodColor } from '../utils/imageService';
 import { replaceImage } from '../utils/imageCorrections';
 import { computeFoodPreferences } from '../utils/foodPreferences';
 import ImageFeedbackModal from '../components/ImageFeedbackModal';
+import AIConsentModal from '../components/AIConsentModal';
+import SourcesButton from '../components/SourcesButton';
 import { useMealContext } from '../context/MealContext';
-import { useVoiceInput } from '../hooks/useVoiceInput';
 import { useApp, useTheme } from '../context/AppContext';
+import { useAuth } from '../context/AuthContext';
+import { useVoiceChat } from '../context/VoiceChatContext';
+import { getAuthHeaders } from '../utils/getAuthHeaders';
 import { useMealOverlay } from '../context/OverlayContext';
 import { useTts } from '../context/TtsContext';
 import { API_BASE_URL } from '../config/api';
 import { getTodayKey } from '../utils/nutrition';
 import { generateJobId, enqueueJob, removeJob, updateJob } from '../utils/jobQueue';
 import { getStoredPushToken } from '../utils/pushNotifications';
+import { usePantryStorage } from '../hooks/usePantryStorage';
 
 const BACKEND_URL = API_BASE_URL;
 
@@ -36,8 +41,8 @@ const GREETING = {
   id: 0,
   role: 'ai',
   text:
-    "Hi! I'm your FoodChat AI Assistant 🤖\n\n" +
-    "Tap the mic button in the bottom bar to speak a meal from anywhere in the app, or just type below — I'll log everything automatically!",
+    "Hi! I'm your Shred AI Assistant 🤖\n\n" +
+    "Type a meal below and I'll log it automatically, or ask me anything about nutrition!",
 };
 
 const SUGGESTIONS = [
@@ -50,8 +55,6 @@ const SUGGESTIONS = [
 ];
 
 // ─── Styles factory ───────────────────────────────────────────────────────────
-const FAB_SIZE = 96;
-
 const makeStyles = (c) => StyleSheet.create({
   safe: { flex: 1, backgroundColor: c.bg },
 
@@ -62,23 +65,6 @@ const makeStyles = (c) => StyleSheet.create({
   onlineBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: c.greenDim, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 6, gap: 6 },
   onlineDot:   { width: 7, height: 7, borderRadius: 4, backgroundColor: c.green },
   onlineText:  { fontSize: 12, fontWeight: '600', color: c.green },
-
-  // Mic FAB section
-  fabSection: { alignItems: 'center', paddingVertical: 14 },
-  fabWrap:    { width: FAB_SIZE, height: FAB_SIZE, alignItems: 'center', justifyContent: 'center' },
-  fab: {
-    width: FAB_SIZE, height: FAB_SIZE, borderRadius: FAB_SIZE / 2,
-    backgroundColor: c.accent, alignItems: 'center', justifyContent: 'center',
-    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.5, shadowRadius: 10, elevation: 8, gap: 2,
-  },
-  fabActive:   { backgroundColor: c.red },
-  fabDisabled: { backgroundColor: c.card, opacity: 0.5 },
-  fabLabel:    { fontSize: 11, fontWeight: '700', color: '#FFFFFF', letterSpacing: 0.5, textTransform: 'uppercase', opacity: 0.85 },
-  fabLabelActive: { opacity: 1 },
-  fabRing:      { position: 'absolute', width: FAB_SIZE, height: FAB_SIZE, borderRadius: FAB_SIZE / 2, borderWidth: 2, borderColor: c.accent },
-  fabRingInner: { borderColor: c.accent + 'AA' },
-  voiceUnsupported: { fontSize: 10, color: c.muted, marginTop: 6 },
 
   // Suggestion chips
   chipsRow:    { flexGrow: 0, marginBottom: 6 },
@@ -136,11 +122,6 @@ const makeStyles = (c) => StyleSheet.create({
   mealCardItemMacros:{ fontSize: 10, color: c.muted },
   mealCardFooter:    { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.greenDim, paddingHorizontal: 12, paddingVertical: 8, borderTopWidth: 1, borderTopColor: c.green + '22' },
   mealCardFooterText:{ fontSize: 12, color: c.green, fontWeight: '600' },
-
-  // Recording bar
-  recordingBar:      { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.redDim, paddingHorizontal: 18, paddingVertical: 8, borderTopWidth: 1, borderTopColor: c.red + '33' },
-  recordingBarError: { backgroundColor: c.redDim },
-  recordingText:     { fontSize: 13, color: c.red, flex: 1 },
 
   // Input bar
   inputBar: {
@@ -280,91 +261,13 @@ function MealLogCard({ items, total, primaryUri, fallbackColor, imageConfidence,
           ))}
         </View>
       )}
-      <View style={s.mealCardFooter}>
-        <Ionicons name="checkmark-circle" size={14} color={c.green} />
-        <Text style={s.mealCardFooterText}>Logged to your dashboard</Text>
+      <View style={[s.mealCardFooter, { justifyContent: 'space-between' }]}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <Ionicons name="checkmark-circle" size={14} color={c.green} />
+          <Text style={s.mealCardFooterText}>Logged to your dashboard</Text>
+        </View>
+        <SourcesButton />
       </View>
-    </View>
-  );
-}
-
-function MicFAB({ isListening, isSupported, onPress, s, c }) {
-  const ring1    = useRef(new Animated.Value(1)).current;
-  const ring1Opa = useRef(new Animated.Value(0)).current;
-  const ring2    = useRef(new Animated.Value(1)).current;
-  const ring2Opa = useRef(new Animated.Value(0)).current;
-  const anim1Ref = useRef(null);
-  const anim2Ref = useRef(null);
-
-  useEffect(() => {
-    if (isListening) {
-      anim1Ref.current = Animated.loop(Animated.parallel([
-        Animated.sequence([
-          Animated.timing(ring1,    { toValue: 2.0, duration: 900, useNativeDriver: true }),
-          Animated.timing(ring1,    { toValue: 1,   duration: 900, useNativeDriver: true }),
-        ]),
-        Animated.sequence([
-          Animated.timing(ring1Opa, { toValue: 0.6, duration: 900, useNativeDriver: true }),
-          Animated.timing(ring1Opa, { toValue: 0,   duration: 900, useNativeDriver: true }),
-        ]),
-      ]));
-      anim2Ref.current = Animated.loop(Animated.parallel([
-        Animated.sequence([
-          Animated.delay(450),
-          Animated.timing(ring2,    { toValue: 2.0, duration: 900, useNativeDriver: true }),
-          Animated.timing(ring2,    { toValue: 1,   duration: 900, useNativeDriver: true }),
-        ]),
-        Animated.sequence([
-          Animated.delay(450),
-          Animated.timing(ring2Opa, { toValue: 0.35, duration: 900, useNativeDriver: true }),
-          Animated.timing(ring2Opa, { toValue: 0,    duration: 900, useNativeDriver: true }),
-        ]),
-      ]));
-      anim1Ref.current.start();
-      anim2Ref.current.start();
-    } else {
-      anim1Ref.current?.stop();
-      anim2Ref.current?.stop();
-      ring1.setValue(1); ring1Opa.setValue(0);
-      ring2.setValue(1); ring2Opa.setValue(0);
-    }
-  }, [isListening]);
-
-  return (
-    <View style={s.fabWrap}>
-      <Animated.View style={[s.fabRing, { transform: [{ scale: ring1 }], opacity: ring1Opa }]} />
-      <Animated.View style={[s.fabRing, s.fabRingInner, { transform: [{ scale: ring2 }], opacity: ring2Opa }]} />
-      <TouchableOpacity
-        style={[s.fab, isListening && s.fabActive, !isSupported && s.fabDisabled]}
-        onPress={onPress}
-        activeOpacity={0.82}
-        disabled={!isSupported}
-      >
-        <Ionicons name={isListening ? 'mic' : 'mic-outline'} size={40} color={!isSupported ? c.muted : '#FFFFFF'} />
-        <Text style={[s.fabLabel, isListening && s.fabLabelActive]}>
-          {isListening ? 'Listening…' : 'Speak'}
-        </Text>
-      </TouchableOpacity>
-    </View>
-  );
-}
-
-function RecordingBar({ isListening, transcript, error, s, c }) {
-  if (!isListening && !error) return null;
-  if (error) {
-    return (
-      <View style={[s.recordingBar, s.recordingBarError]}>
-        <Ionicons name="alert-circle" size={13} color={c.red} />
-        <Text style={[s.recordingText, { color: c.red }]} numberOfLines={1}>{error}</Text>
-      </View>
-    );
-  }
-  return (
-    <View style={s.recordingBar}>
-      <Ionicons name="mic" size={13} color={c.red} />
-      <Text style={s.recordingText} numberOfLines={1}>
-        {transcript ? `"${transcript}"` : 'Listening…'}
-      </Text>
     </View>
   );
 }
@@ -372,8 +275,11 @@ function RecordingBar({ isListening, transcript, error, s, c }) {
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function HelperScreen() {
-  const { addMeal } = useMealContext();
-  const { state } = useApp();
+  const { addMeal, updateMeal } = useMealContext();
+  const { state, dispatch } = useApp();
+  const { user }  = useAuth();
+  const { isThinking } = useVoiceChat();
+  const { items: pantryItems } = usePantryStorage();
   const { markSpeaking, markStopped } = useTts();
   const c = useTheme();
   const s = useMemo(() => makeStyles(c), [c]);
@@ -392,6 +298,30 @@ export default function HelperScreen() {
   const [input,        setInput]        = useState('');
   const [typing,       setTyping]       = useState(false);
   const [feedbackItem, setFeedbackItem] = useState(null); // { name, imageUrl, imageConfidence, voteStats, msgId }
+  const [showConsent,  setShowConsent]  = useState(false);
+  const pendingActionRef = useRef(null);
+
+  // Gate every AI action behind a one-time consent check.
+  // If already consented, runs immediately. Otherwise shows the modal and
+  // defers the action until the user accepts.
+  const withConsent = useCallback((action) => {
+    if (state.aiConsent) { action(); return; }
+    pendingActionRef.current = action;
+    setShowConsent(true);
+  }, [state.aiConsent]);
+
+  const handleConsentAccept = useCallback(() => {
+    dispatch({ type: 'SET_AI_CONSENT', payload: true });
+    setShowConsent(false);
+    const action = pendingActionRef.current;
+    pendingActionRef.current = null;
+    action?.();
+  }, [dispatch]);
+
+  const handleConsentDecline = useCallback(() => {
+    setShowConsent(false);
+    pendingActionRef.current = null;
+  }, []);
 
   const scrollRef         = useRef(null);
   const timerRef          = useRef(null);
@@ -414,10 +344,11 @@ export default function HelperScreen() {
   }, [state.chatMessages.length]);
 
   // ── Duplicate-log guard ──────────────────────────────────────────────────────
-  // Returns true if a meal with this name was already logged in the last 3 min.
+  // Returns true if a meal with this name was already logged in the last 30 s.
+  // Tight window: only catches accidental rapid double-taps/retries.
   const isDuplicateLog = (mealName) => {
     const now = Date.now();
-    const WINDOW = 3 * 60 * 1000; // 3 minutes
+    const WINDOW = 30 * 1000; // 30 seconds
     // Evict old entries
     recentlyLoggedRef.current = recentlyLoggedRef.current.filter(
       (e) => now - e.ts < WINDOW,
@@ -457,8 +388,9 @@ export default function HelperScreen() {
     if (!fi) return;
     await replaceImage(fi.name, uri);
     updateMessageImage(fi.msgId, uri, 'high');
+    if (fi.mealId) updateMeal({ id: fi.mealId, uri });
     setFeedbackItem(null);
-  }, [feedbackItem, updateMessageImage]);
+  }, [feedbackItem, updateMessageImage, updateMeal]);
 
   useEffect(() => {
     const t = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
@@ -470,18 +402,6 @@ export default function HelperScreen() {
 
   // Stop any ongoing speech when leaving this screen; clear the speaking flag too
   useEffect(() => () => { stopSpeech(); markStopped(); }, []);
-
-  // ── Voice ──────────────────────────────────────────────────────────────────
-  // Not memoised — useVoiceInput keeps onResult fresh via a ref anyway
-  const handleVoiceResult = (finalText) => {
-    setInput(finalText);
-    setTimeout(() => dispatchSend(finalText), 400);
-  };
-
-  const { isSupported, isListening, transcript, error: voiceError, startListening, stopListening } =
-    useVoiceInput({ onResult: handleVoiceResult });
-
-  const handleMicPress = () => { if (isListening) stopListening(); else startListening(); };
 
   // Recency-weighted food preferences — recomputed only when dailyLogs changes
   const foodPreferences = useMemo(
@@ -515,27 +435,41 @@ export default function HelperScreen() {
     // the job stays in AsyncStorage and useJobProcessor retries it on next open.
     const pushToken  = await getStoredPushToken();
     const jobId      = generateJobId();
+    const pantrySnapshot = pantryItems.map(({ name, qty, category }) => ({ name, qty, category }));
+
+    // Derive expiring-soon items using the same age-sort logic as PantryScreen
+    let expiringNames = [];
+    if (pantryItems.length >= 3) {
+      const byAge = [...pantryItems].sort((a, b) =>
+        new Date(a.dateAdded || a.timestamp || 0).getTime() -
+        new Date(b.dateAdded || b.timestamp || 0).getTime()
+      );
+      const count = Math.min(4, Math.max(2, Math.floor(byAge.length * 0.3)));
+      expiringNames = byAge.slice(0, count).map((i) => i.name);
+    }
+
+    const pantryPrefix = pantryItems.length ? [
+      expiringNames.length
+        ? `Expiring soon items (prioritize these in suggestions): ${expiringNames.join(', ')}.`
+        : null,
+      `Available pantry items: ${pantryItems.map((i) => i.name).join(', ')}.`,
+    ].filter(Boolean).join('\n') + '\n\n' : '';
+
+    const messageForAI = pantryPrefix + trimmed;
     const jobPayload = {
-      message: trimmed, history: historySnapshot, userProfile: profileForAI,
-      foodPreferences, pushToken, jobId,
+      message: messageForAI, history: historySnapshot, userProfile: profileForAI,
+      foodPreferences, pantryItems: pantrySnapshot, pushToken, jobId,
     };
     await enqueueJob(jobId, jobPayload);
 
-    // 35 s matches Render free-tier worst-case cold-start (20–40 s).
-    // The job was already enqueued above, so if THIS fetch times out the retry
-    // processor picks it up next time the app comes to the foreground.
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 35_000);
     console.log(`[chat] Request started — job: ${jobId}`);
 
     try {
       const res = await fetch(`${BACKEND_URL}/chat`, {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(jobPayload),
-        signal: controller.signal,
+        headers: await getAuthHeaders(user),
+        body: JSON.stringify({ ...jobPayload, userAIConsent: true }),
       });
-      clearTimeout(timeout);
 
       // Non-2xx: mark job as 'failed' so the retry processor picks it up,
       // then surface the error. Do NOT removeJob here — the server may retry OK.
@@ -549,11 +483,12 @@ export default function HelperScreen() {
       await removeJob(jobId);
       console.log(`[chat] Request completed — job: ${jobId}`);
 
-      // Persist conversation so the AI has context on the next turn
+      // Persist conversation so the AI has context on the next turn.
+      // Store messageForAI so subsequent turns retain pantry context.
       chatHistoryRef.current = [
         ...historySnapshot,
-        { role: 'user',      content: trimmed     },
-        { role: 'assistant', content: data.reply  },
+        { role: 'user',      content: messageForAI },
+        { role: 'assistant', content: data.reply   },
       ];
 
       setTyping(false);
@@ -569,16 +504,22 @@ export default function HelperScreen() {
 
       if (validMeal) {
         const m = data.meal;
-        const { uri: finalUri, confidence: finalConfidence } =
-          await getOrFetchFoodImage(m.name);
+        // Prefer the imageUrl embedded in the response (fetched server-side while
+        // the connection was already warm). Fall back to a client-side /food-image
+        // fetch only when the backend didn't supply one.
+        const { uri: finalUri, confidence: finalConfidence } = m.imageUrl
+          ? { uri: m.imageUrl, confidence: 'high' }
+          : await getOrFetchFoodImage(m.name);
+        console.log(`[chat] image for "${m.name}": ${finalUri ?? 'none'} (${finalConfidence})`);
         const foodVerified = finalConfidence === 'verified';
         const imgColor     = getFoodColor(m.imageKey || m.name);
 
         if (!isDuplicateLog(m.name)) {
           console.log('[chat] logging meal:', m.name, m.calories, 'kcal | verified:', foodVerified);
-          const msgId = Date.now() + 1;
+          const mealId = generateMealId();
+          const msgId  = Date.now() + 1;
           addMeal({
-            id: generateMealId(), name: m.name, time: formatTime(),
+            id: mealId, name: m.name, time: formatTime(),
             kcal: m.calories, protein: m.protein, carbs: m.carbs, fat: m.fat,
             uri: finalUri, fallbackColor: imgColor,
           });
@@ -592,7 +533,7 @@ export default function HelperScreen() {
           setMessages((prev) => [...prev, {
             id: msgId, role: 'ai',
             text: data.reply || 'Logged!',
-            mealData: { items, total, primaryUri: finalUri, fallbackColor: imgColor, imageConfidence: finalConfidence, voteStats: {} },
+            mealData: { items, total, primaryUri: finalUri, fallbackColor: imgColor, imageConfidence: finalConfidence, voteStats: {}, mealId },
           }]);
           if (!foodVerified) {
             scheduleFeedbackPrompt({
@@ -601,6 +542,7 @@ export default function HelperScreen() {
               imageConfidence: finalConfidence,
               voteStats:       {},
               msgId,
+              mealId,
             });
           }
         } else {
@@ -611,32 +553,19 @@ export default function HelperScreen() {
         setMessages((prev) => [...prev, { id: Date.now() + 1, role: 'ai', text: data.reply }]);
       }
     } catch (err) {
-      clearTimeout(timeout);
       setTyping(false);
 
-      const isTimeout = err.name === 'AbortError';
-      const isOffline = !isTimeout && (
-        err.message.includes('Failed to fetch') || err.message.includes('Network')
-      );
+      const isOffline = err.message.includes('Failed to fetch') || err.message.includes('Network');
 
-      // Mark the job as failed so useJobProcessor retries it on next foreground.
-      // AbortError (timeout): job stays 'pending' — it may already be processing
-      // on the server and the push notification will arrive when it finishes.
-      if (!isTimeout) {
-        updateJob(jobId, { status: 'failed' }).catch(() => {});
-      }
+      updateJob(jobId, { status: 'failed' }).catch(() => {});
 
-      console.warn(`[chat] Request failed — job: ${jobId} — ${
-        isTimeout ? 'timed out after 35s' : err.message
-      }`);
+      console.warn(`[chat] Request failed — job: ${jobId} — ${err.message}`);
 
       setMessages((prev) => [...prev, {
         id: Date.now() + 1, role: 'ai',
-        text: isTimeout
-          ? "Taking longer than expected. Your message is saved — you'll get a notification when it's processed."
-          : isOffline
-            ? "No connection right now. Your message is saved and will be sent automatically when you're back online."
-            : `⚠️ Server error: ${err.message}`,
+        text: isOffline
+          ? "No connection right now. Your message is saved and will be sent automatically when you're back online."
+          : `⚠️ Server error: ${err.message}`,
       }]);
     }
   };
@@ -647,8 +576,8 @@ export default function HelperScreen() {
     const presetKey = route.params?.presetKey ?? preset;
     if (preset && presetKey !== presetSentRef.current) {
       presetSentRef.current = presetKey;
-      const t = setTimeout(() => dispatchSend(preset), 350);
-      return () => clearTimeout(t);
+      setInput(preset);
+      withConsent(() => dispatchSend(preset));
     }
   }, [route.params?.presetKey, route.params?.preset]);
 
@@ -668,11 +597,11 @@ export default function HelperScreen() {
   };
 
   const handleCameraPress = () => {
-    Alert.alert('Add Food Photo', 'How would you like to add a photo?', [
+    withConsent(() => Alert.alert('Add Food Photo', 'How would you like to add a photo?', [
       { text: 'Take Photo',          onPress: launchCamera  },
       { text: 'Choose from Library', onPress: launchLibrary },
       { text: 'Cancel', style: 'cancel' },
-    ]);
+    ]));
   };
 
   const handlePhotoSelected = async (asset) => {
@@ -707,10 +636,10 @@ export default function HelperScreen() {
     try {
       const res = await fetch(`${BACKEND_URL}/analyze-photo`, {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await getAuthHeaders(user),
         // pushToken lets the backend send a notification if a meal is logged.
         // No jobId — photo payloads are too large to store in AsyncStorage.
-        body: JSON.stringify({ imageBase64: base64, mimeType, userProfile: profileForAI, pushToken }),
+        body: JSON.stringify({ imageBase64: base64, mimeType, userProfile: profileForAI, pushToken, userAIConsent: true }),
         signal: photoController.signal,
       });
       clearTimeout(photoTimeout);
@@ -732,16 +661,19 @@ export default function HelperScreen() {
 
       if (validMeal) {
         const m = data.meal;
-        const { uri: finalUri, confidence: finalConfidence } =
-          await getOrFetchFoodImage(m.name);
+        const { uri: finalUri, confidence: finalConfidence } = m.imageUrl
+          ? { uri: m.imageUrl, confidence: 'high' }
+          : await getOrFetchFoodImage(m.name);
+        console.log(`[photo] image for "${m.name}": ${finalUri ?? 'none'} (${finalConfidence})`);
         const foodVerified = finalConfidence === 'verified';
         const imgColor     = getFoodColor(m.imageKey || m.name);
 
         if (!isDuplicateLog(m.name)) {
           console.log('[photo] logging meal:', m.name, m.calories, 'kcal | verified:', foodVerified);
-          const msgId = Date.now() + 1;
+          const mealId = generateMealId();
+          const msgId  = Date.now() + 1;
           addMeal({
-            id: generateMealId(), name: m.name, time: formatTime(),
+            id: mealId, name: m.name, time: formatTime(),
             kcal: m.calories, protein: m.protein, carbs: m.carbs, fat: m.fat,
             uri: finalUri, fallbackColor: imgColor,
           });
@@ -755,7 +687,7 @@ export default function HelperScreen() {
           setMessages((prev) => [...prev, {
             id: msgId, role: 'ai',
             text: data.reply || 'Logged!',
-            mealData: { items, total, primaryUri: finalUri, fallbackColor: imgColor, imageConfidence: finalConfidence, voteStats: {} },
+            mealData: { items, total, primaryUri: finalUri, fallbackColor: imgColor, imageConfidence: finalConfidence, voteStats: {}, mealId },
           }]);
           if (!foodVerified) {
             scheduleFeedbackPrompt({
@@ -764,6 +696,7 @@ export default function HelperScreen() {
               imageConfidence: finalConfidence,
               voteStats:       {},
               msgId,
+              mealId,
             });
           }
         } else {
@@ -798,7 +731,7 @@ export default function HelperScreen() {
         <View style={s.header}>
           <View>
             <Text style={s.title}>AI Helper</Text>
-            <Text style={s.subtitle}>Powered by FoodChat AI</Text>
+            <Text style={s.subtitle}>Powered by Shred AI</Text>
           </View>
           <View style={s.onlineBadge}>
             <View style={s.onlineDot} />
@@ -809,7 +742,7 @@ export default function HelperScreen() {
         {/* ── Suggestion chips ── */}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chipsScroll} style={s.chipsRow}>
           {SUGGESTIONS.map((sg) => (
-            <TouchableOpacity key={sg.id} style={s.chip} activeOpacity={0.7} onPress={() => dispatchSend(sg.label)}>
+            <TouchableOpacity key={sg.id} style={s.chip} activeOpacity={0.7} onPress={() => withConsent(() => dispatchSend(sg.label))}>
               <Ionicons name={sg.icon} size={14} color={c.accent} />
               <Text style={s.chipText}>{sg.label}</Text>
             </TouchableOpacity>
@@ -835,7 +768,16 @@ export default function HelperScreen() {
               <View key={msg.id} style={s.aiBubbleRow}>
                 <AIAvatar s={s} />
                 <View style={s.aiBubbleWrap}>
-                  {msg.text ? <View style={s.aiBubble}><Text style={s.aiBubbleText}>{msg.text}</Text></View> : null}
+                  {msg.text ? (
+                    <View style={s.aiBubble}>
+                      <Text style={s.aiBubbleText}>{msg.text}</Text>
+                      {msg.id !== 0 && (
+                        <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 6 }}>
+                          <SourcesButton />
+                        </View>
+                      )}
+                    </View>
+                  ) : null}
                   {msg.mealData && (
                     <MealLogCard
                       s={s} c={c}
@@ -852,6 +794,7 @@ export default function HelperScreen() {
                           imageConfidence: msg.mealData.imageConfidence,
                           voteStats:       msg.mealData.voteStats,
                           msgId:           msg.id,
+                          mealId:          msg.mealData.mealId,
                         });
                       } : null}
                     />
@@ -860,28 +803,24 @@ export default function HelperScreen() {
               </View>
             );
           })}
-          {typing && <TypingBubble s={s} />}
+          {(typing || isThinking) && <TypingBubble s={s} />}
         </ScrollView>
-
-        {/* ── Recording status bar ── */}
-        <RecordingBar isListening={isListening} transcript={transcript} error={voiceError} s={s} c={c} />
 
         {/* ── Input bar ── */}
         <View style={s.inputBar}>
           <TextInput
             style={s.input}
-            value={isListening ? transcript : input}
+            value={input}
             onChangeText={setInput}
             placeholder='e.g. "I had 3 eggs and oatmeal"'
             placeholderTextColor={c.muted}
             multiline
-            editable={!isListening}
             returnKeyType="send"
             blurOnSubmit
-            onSubmitEditing={() => dispatchSend(input)}
+            onSubmitEditing={() => withConsent(() => dispatchSend(input))}
           />
-          <TouchableOpacity style={[s.sendBtn, (input.trim() || transcript.trim()) && s.sendBtnActive]} onPress={() => dispatchSend(input)} activeOpacity={0.8}>
-            <Ionicons name="send" size={18} color={(input.trim() || transcript.trim()) ? '#FFFFFF' : c.muted} />
+          <TouchableOpacity style={[s.sendBtn, input.trim() && s.sendBtnActive]} onPress={() => withConsent(() => dispatchSend(input))} activeOpacity={0.8}>
+            <Ionicons name="send" size={18} color={input.trim() ? '#FFFFFF' : c.muted} />
           </TouchableOpacity>
         </View>
 
@@ -894,6 +833,13 @@ export default function HelperScreen() {
         currentUri={feedbackItem?.imageUrl}
         onSelect={handleImageSelect}
         onClose={() => setFeedbackItem(null)}
+      />
+
+      {/* ── AI consent modal (shown once before first AI use) ── */}
+      <AIConsentModal
+        visible={showConsent}
+        onAccept={handleConsentAccept}
+        onDecline={handleConsentDecline}
       />
 
     </SafeAreaView>

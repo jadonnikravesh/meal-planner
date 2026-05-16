@@ -22,7 +22,28 @@
       "Bash(node -e \"const p=require\\('./backend/package.json'\\); console.log\\('start:', p.scripts.start\\); console.log\\('engines:', JSON.stringify\\(p.engines\\)\\); console.log\\('deps:', Object.keys\\(p.dependencies\\).join\\(', '\\)\\)\")",
       "Bash(node -e \"const s = require\\('./server.js'\\); console.log\\('syntax ok'\\)\")",
       "Bash(xargs grep *)",
-      "Bash(node -e \"const p=require\\('c:/Users/AtlasX/Desktop/Code Stuff/meal-planner/package.json'\\); console.log\\('expo-av:', p.dependencies['expo-av']\\); console.log\\('expo:', p.dependencies['expo']\\); console.log\\('expo-file-system:', p.dependencies['expo-file-system']\\)\")"
+      "Bash(node -e \"const p=require\\('c:/Users/AtlasX/Desktop/Code Stuff/meal-planner/package.json'\\); console.log\\('expo-av:', p.dependencies['expo-av']\\); console.log\\('expo:', p.dependencies['expo']\\); console.log\\('expo-file-system:', p.dependencies['expo-file-system']\\)\")",
+      "Bash(grep -E \"^d|^-.*\\\\.\\(js|json\\)$\")",
+      "Bash(node -e \"const FS = require\\('expo-file-system'\\); console.log\\('EncodingType:', FS.EncodingType\\); console.log\\('keys:', Object.keys\\(FS\\).slice\\(0,15\\)\\)\")",
+      "Bash(node -e \"const FS = require\\('./node_modules/expo-file-system'\\); console.log\\('EncodingType:', FS.EncodingType\\); console.log\\('type:', typeof FS.EncodingType\\)\")",
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\(Object.keys\\(p.dependencies\\).filter\\(k=>k.includes\\('expo'\\)\\).join\\('\\\\n'\\)\\)\")",
+      "Bash(node -e \"const pkg = require\\('./node_modules/expo-image-picker/package.json'\\); console.log\\(pkg.version\\)\")",
+      "Bash(node -e \"const p=require\\('./package.json'\\); const keys=Object.keys\\({...p.dependencies,...p.devDependencies}\\); keys.filter\\(k=>k.includes\\('camera'\\)||k.includes\\('vision'\\)\\).forEach\\(k=>console.log\\(k\\)\\)\")",
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\(JSON.stringify\\({...p.dependencies,...p.devDependencies}, null, 2\\)\\)\")",
+      "Bash(node -e \"console.log\\(require\\('./node_modules/expo-camera/package.json'\\).version\\)\")",
+      "Bash(node -e \"const m=require\\('./node_modules/expo-camera'\\); console.log\\(Object.keys\\(m\\).filter\\(k=>k.includes\\('Camera'\\)||k.includes\\('Permission'\\)||k.includes\\('camera'\\)\\)\\)\")",
+      "Bash(node -e \"require\\('express-rate-limit'\\); console.log\\('ok'\\)\")",
+      "Bash(node --check server.js)",
+      "Bash(node -e \"require\\('firebase-admin'\\); console.log\\('ok'\\)\")",
+      "Bash(node -e \"console.log\\(process.version\\)\")",
+      "WebFetch(domain:meal-planner-40ct.onrender.com)",
+      "Bash(python3 -c \"import sys,json; p=json.load\\(sys.stdin\\); print\\(p.get\\('version'\\), p.get\\('main'\\)\\)\")",
+      "Bash(node -e \"const p=require\\('./node_modules/expo-in-app-purchases/package.json'\\); console.log\\(p.version, p.main\\)\")",
+      "Bash(node -e \"const m=require\\('./node_modules/expo-in-app-purchases/build/InAppPurchases.js'\\); console.log\\(Object.keys\\(m\\).join\\(', '\\)\\)\")",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\AtlasX\\\\Desktop\\\\Code Stuff\\\\meal-planner\" -Recurse -File -Include \"*.js\", \"*.jsx\", \"*.ts\", \"*.tsx\")",
+      "Bash(Select-Object -First 20 FullName)",
+      "Bash(node -e ' *)",
+      "WebSearch"
     ]
   }
 }

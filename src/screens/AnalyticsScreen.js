@@ -13,6 +13,7 @@ import Svg, {
 import { useTheme, useApp } from '../context/AppContext';
 import { useMealContext } from '../context/MealContext';
 import { getTodayKey, getDateKey, computeStreak } from '../utils/nutrition';
+import SourcesButton from '../components/SourcesButton';
 
 // ─── Chart constants ───────────────────────────────────────────────────────────
 const CHART_H  = 192;
@@ -107,6 +108,8 @@ const CHART_DATA = {
   },
 };
 
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
 const METRIC_GOAL = { weight: 168, calories: 2500 };
 const GOAL_PCT = {
   weight:   { '90 Days': 67, '6 Months': 76, '1 Year': 83, 'All time': 87 },
@@ -154,7 +157,7 @@ const makeStyles = (c) => StyleSheet.create({
   safe:   { flex: 1, backgroundColor: c.bg },
   scroll: { paddingHorizontal: 16, paddingBottom: 110 },
 
-  header: { paddingTop: 16, paddingBottom: 16 },
+  header: { paddingTop: 16, paddingBottom: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   title:  { fontSize: 22, fontWeight: '700', color: c.white },
 
   statsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 12 },
@@ -434,6 +437,23 @@ export default function AnalyticsScreen() {
     { label: 'Fat',     grams: Math.round(liveTotals.fat),     goal: profile.fatTarget     || 56,  color: c.fat     },
   ], [liveTotals, profile, c]);
 
+  const weeklyHighlights = useMemo(() => {
+    const today = new Date();
+    let best = null; // { dayName, cal } — lowest logged calories
+    let peak = null; // { dayName, cal } — highest logged calories
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - i);
+      const key = getDateKey(d);
+      const cal = dailyLogs[key]?.calories ?? 0;
+      if (cal <= 0) continue;
+      const dayName = DAY_NAMES[d.getDay()];
+      if (!best || cal < best.cal) best = { dayName, cal };
+      if (!peak || cal > peak.cal) peak = { dayName, cal };
+    }
+    return { best, peak };
+  }, [dailyLogs]);
+
   const STATS = useMemo(() => [
     { label: 'Avg Calories',   value: avgCalories > 0 ? avgCalories.toLocaleString() : '—', unit: 'kcal', icon: 'flame',            color: c.fire    },
     { label: 'Calorie Goal',   value: calorieGoal.toLocaleString(),                          unit: 'kcal', icon: 'flag',             color: c.accent  },
@@ -456,7 +476,10 @@ export default function AnalyticsScreen() {
         <GoalProgressChart s={s} />
 
         <View style={s.section}>
-          <Text style={s.sectionTitle}>Today's Macros</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 }}>
+            <Text style={s.sectionTitle}>Today's Macros</Text>
+            <SourcesButton />
+          </View>
           <Text style={s.sectionSub}>Average vs. daily targets</Text>
           <View style={s.macrosList}>
             {MACROS.map((m) => <MacroBar key={m.label} item={m} s={s} />)}
@@ -468,15 +491,25 @@ export default function AnalyticsScreen() {
           <View style={s.highlightsRow}>
             <View style={[s.highlightCard, { borderColor: c.green + '44', backgroundColor: c.greenDim }]}>
               <Ionicons name="trending-up" size={20} color={c.green} />
-              <Text style={s.highlightValue}>Mon</Text>
+              <Text style={s.highlightValue}>{weeklyHighlights.best?.dayName ?? '—'}</Text>
               <Text style={s.highlightLabel}>Best day</Text>
-              <Text style={[s.highlightKcal, { color: c.green }]}>2,100 kcal</Text>
+              {weeklyHighlights.best && (
+                <Text style={[s.highlightKcal, { color: c.green }]}>
+                  {weeklyHighlights.best.cal.toLocaleString()} kcal
+                </Text>
+              )}
             </View>
             <View style={[s.highlightCard, { borderColor: c.protein + '44', backgroundColor: c.redDim }]}>
               <Ionicons name="trending-down" size={20} color={c.protein} />
-              <Text style={s.highlightValue}>Fri</Text>
-              <Text style={s.highlightLabel}>Over goal</Text>
-              <Text style={[s.highlightKcal, { color: c.protein }]}>2,700 kcal</Text>
+              <Text style={s.highlightValue}>{weeklyHighlights.peak?.dayName ?? '—'}</Text>
+              <Text style={s.highlightLabel}>
+                {weeklyHighlights.peak && weeklyHighlights.peak.cal > calorieGoal ? 'Over goal' : 'Highest day'}
+              </Text>
+              {weeklyHighlights.peak && (
+                <Text style={[s.highlightKcal, { color: c.protein }]}>
+                  {weeklyHighlights.peak.cal.toLocaleString()} kcal
+                </Text>
+              )}
             </View>
           </View>
         </View>

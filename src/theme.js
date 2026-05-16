@@ -41,42 +41,56 @@ export const DARK_COLORS = {
   statusBar:   'light',    // expo-status-bar style prop
 };
 
+// ─── ORIGINAL LIGHT_COLORS (purple / blue-grey) — kept for easy revert ──────
+// export const LIGHT_COLORS = {
+//   bg: '#F4F6FB', card: '#FFFFFF', card2: '#EEF2F8', border: '#E2E8F0',
+//   white: '#0F172A', muted: '#6B7280',
+//   accent: '#6B5FD0', accentDim: 'rgba(107,95,208,0.12)',
+//   inputBg: '#EEF2F8',
+//   fire: '#EA6E04', protein: '#C84040', carbs: '#9A6B28', fat: '#2563EB',
+//   water: '#2563EB', track: '#DDE4EF',
+//   green: '#16A34A', greenDim: '#DCFCE7', red: '#DC2626', redDim: '#FEE2E2',
+//   tabBar: '#FFFFFF', tabBorder: '#E2E8F0', tabActive: '#6B5FD0',
+//   tabInactive: '#9CA3AF', statusBar: 'dark',
+// };
+
+// Shred AI — premium light-only fitness theme
 export const LIGHT_COLORS = {
   // ── Base UI ────────────────────────────────────────────────────────────────
-  bg:        '#F4F6FB',
-  card:      '#FFFFFF',
-  card2:     '#EEF2F8',
-  border:    '#E2E8F0',
+  bg:        '#F6F1E8',   // warm cream
+  card:      '#FFFDF9',   // near-white warm surface
+  card2:     '#EDE8DF',   // secondary surface
+  border:    '#E5DDD2',   // warm divider
 
   // ── Text ──────────────────────────────────────────────────────────────────
-  white:     '#0F172A',    // primary text on light bg (dark)
-  muted:     '#6B7280',
+  white:     '#1F2933',   // primary text (deep charcoal)
+  muted:     '#8A8278',   // warm secondary text
 
-  // ── Accent (purple, slightly deeper for light contrast) ────────────────────
-  accent:    '#6B5FD0',
-  accentDim: 'rgba(107,95,208,0.12)',
+  // ── Accent (athletic sage green) ──────────────────────────────────────────
+  accent:    '#5E8C61',
+  accentDim: 'rgba(94,140,97,0.12)',
 
   // ── Input ─────────────────────────────────────────────────────────────────
-  inputBg:   '#EEF2F8',
+  inputBg:   '#EDE8DF',
 
   // ── Macro / status colors ──────────────────────────────────────────────────
-  fire:      '#EA6E04',
-  protein:   '#C84040',
-  carbs:     '#9A6B28',
-  fat:       '#2563EB',
-  water:     '#2563EB',
-  track:     '#DDE4EF',
+  fire:      '#D97745',   // burnt orange (calories / flame)
+  protein:   '#C0504A',   // warm red
+  carbs:     '#B8893A',   // amber
+  fat:       '#4A80C4',   // blue (unchanged)
+  water:     '#4A8FC4',   // blue (unchanged)
+  track:     '#E5DDD2',   // same warm tone as border
 
-  green:     '#16A34A',
-  greenDim:  '#DCFCE7',
-  red:       '#DC2626',
-  redDim:    '#FEE2E2',
+  green:     '#5E8C61',   // sage — success / logged / checkmarks
+  greenDim:  'rgba(94,140,97,0.12)',
+  red:       '#C84040',
+  redDim:    'rgba(200,64,64,0.10)',
 
   // ── Tab bar ────────────────────────────────────────────────────────────────
-  tabBar:      '#FFFFFF',
-  tabBorder:   '#E2E8F0',
-  tabActive:   '#6B5FD0',
-  tabInactive: '#9CA3AF',
+  tabBar:      '#FFFDF9',
+  tabBorder:   '#E5DDD2',
+  tabActive:   '#5E8C61',
+  tabInactive: '#A09585',
   statusBar:   'dark',
 };
 

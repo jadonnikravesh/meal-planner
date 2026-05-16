@@ -93,20 +93,20 @@ export default function PrivacyPolicyScreen({ visible, onClose }) {
               <Ionicons name="lock-closed-outline" size={22} color={c.accent} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={{ fontSize: 15, fontWeight: '700', color: c.white }}>FoodChat AI — Privacy Policy</Text>
+              <Text style={{ fontSize: 15, fontWeight: '700', color: c.white }}>Shred AI — Privacy Policy</Text>
               <Text style={{ fontSize: 12, color: c.muted, marginTop: 2 }}>Last updated: {LAST_UPDATED}</Text>
             </View>
           </View>
 
           <Section title="Our Commitment" c={c}>
             <Body c={c}>
-              Your privacy matters. This policy explains what data FoodChat AI collects, how it's used, and how it's protected. We collect only what we need to make the app work well for you.
+              Your privacy matters. This policy explains what data Shred AI collects, how it's used, and how it's protected. We collect only what we need to make the app work well for you.
             </Body>
           </Section>
 
           <Section title="1. What Data We Collect" c={c}>
             <Body c={c}>
-              We collect the following types of information when you use FoodChat AI:
+              We collect the following types of information when you use Shred AI:
             </Body>
 
             <View style={{ marginTop: 14, gap: 0 }}>
@@ -158,7 +158,7 @@ export default function PrivacyPolicyScreen({ visible, onClose }) {
 
           <Section title="3. AI Processing" c={c}>
             <Body c={c}>
-              FoodChat AI sends your messages and food photos to a third-party AI provider (Anthropic) to generate responses. Your profile data (goals, macros, progress) may be included as context to personalize those responses. Anthropic processes this data under their own privacy policy and does not store it for training purposes by default.
+              Shred AI sends your messages and food photos to a third-party AI provider (Anthropic) to generate responses. Your profile data (goals, macros, progress) may be included as context to personalize those responses. Anthropic processes this data under their own privacy policy and does not store it for training purposes by default.
             </Body>
           </Section>
 
@@ -195,7 +195,7 @@ export default function PrivacyPolicyScreen({ visible, onClose }) {
 
           <Section title="7. Children's Privacy" c={c}>
             <Body c={c}>
-              FoodChat AI is not intended for children under 13 years of age. We do not knowingly collect personal information from children under 13. If you believe a child has provided us with their information, please contact us so we can remove it.
+              Shred AI is not intended for children under 13 years of age. We do not knowingly collect personal information from children under 13. If you believe a child has provided us with their information, please contact us so we can remove it.
             </Body>
           </Section>
 

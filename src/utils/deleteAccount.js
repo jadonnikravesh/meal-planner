@@ -11,7 +11,8 @@ const GLOBAL_ASYNC_KEYS = [
   'mealPlannerState_v1',    // legacy pre-auth key — must be cleared so a new
                             // same-email account does not inherit old data
 ];
-const userStorageKey = (uid) => `mealPlannerState_v1_${uid}`;
+const userStorageKey  = (uid) => `mealPlannerState_v1_${uid}`;
+const pantryStorageKey = (uid) => `pantryItems_v1_${uid}`;
 
 // ─── Firestore subcollections ─────────────────────────────────────────────────
 // 'meals' is the only confirmed write path (MealContext → users/{uid}/meals/{id}).
@@ -99,7 +100,7 @@ async function deleteFirestoreData(uid) {
 // ─── AsyncStorage ─────────────────────────────────────────────────────────────
 
 async function clearLocalStorage(uid) {
-  const keys = [userStorageKey(uid), ...GLOBAL_ASYNC_KEYS];
+  const keys = [userStorageKey(uid), pantryStorageKey(uid), ...GLOBAL_ASYNC_KEYS];
   try {
     await AsyncStorage.multiRemove(keys);
     console.log('[deleteAccount] AsyncStorage cleared:', keys.join(', '));

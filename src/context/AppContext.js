@@ -58,6 +58,7 @@ const INITIAL_STATE = {
     customerId:     null,
     trialEnd:       null,
   },
+  aiConsent: false,
 };
 
 function ensureLog(existing) {
@@ -269,6 +270,9 @@ function reducer(state, action) {
         subscription: { ...state.subscription, ...action.payload },
       };
 
+    case 'SET_AI_CONSENT':
+      return { ...state, aiConsent: action.payload };
+
     case 'RESET_ONBOARDING':
       return { ...INITIAL_STATE };
 
@@ -408,8 +412,8 @@ export function useApp() {
 }
 
 export function useTheme() {
-  const { state } = useContext(AppContext);
-  return state.settings.darkMode ? DARK_COLORS : LIGHT_COLORS;
+  // Permanently light — to revert, restore: state.settings.darkMode ? DARK_COLORS : LIGHT_COLORS
+  return LIGHT_COLORS;
 }
 
 /**

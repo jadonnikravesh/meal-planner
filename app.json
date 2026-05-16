@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "FoodChat AI",
+    "name": "Shred AI",
     "slug": "meal-planner",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -18,8 +18,9 @@
       "icon": "./assets/icon.png",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
-        "NSMicrophoneUsageDescription": "FoodChat AI uses your microphone so you can log meals by speaking.",
-        "NSSpeechRecognitionUsageDescription": "FoodChat AI transcribes your voice to log meals hands-free."
+        "NSCameraUsageDescription": "Shred AI uses your camera to scan your pantry and detect food items automatically.",
+        "NSMicrophoneUsageDescription": "Shred AI uses your microphone so you can log meals by speaking.",
+        "NSSpeechRecognitionUsageDescription": "Shred AI transcribes your voice to log meals hands-free."
       }
     },
     "android": {
@@ -37,6 +38,11 @@
       "eas": {
         "projectId": "5a39c4ba-1a64-4932-911f-bbf5709e5010"
       }
-    }
+    },
+    "plugins": [
+      "expo-font",
+      "expo-camera",
+      "expo-speech-recognition"
+    ]
   }
 }

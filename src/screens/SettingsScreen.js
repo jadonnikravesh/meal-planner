@@ -7,9 +7,10 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as StoreReview from 'expo-store-review';
+import { useNavigation } from '@react-navigation/native';
 import { useApp, useTheme } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
-import { DEV_MODE, isReviewAccount } from '../config/testMode';
+import { isDevEnabled } from '../config/testMode';
 import TermsOfServiceScreen from './TermsOfServiceScreen';
 import PrivacyPolicyScreen  from './PrivacyPolicyScreen';
 
@@ -316,7 +317,7 @@ function ReauthModal({ visible, email, onConfirm, onDismiss, error, loading }) {
                 fontSize: 16, color: c.white,
                 backgroundColor: c.card2,
                 borderWidth: 1,
-                borderColor: error ? '#EF4444' : c.accent + '55',
+                borderColor: error ? c.red : c.accent + '55',
                 borderRadius: 14,
                 paddingHorizontal: 16, paddingVertical: 14,
                 outlineStyle: 'none',
@@ -324,7 +325,7 @@ function ReauthModal({ visible, email, onConfirm, onDismiss, error, loading }) {
             />
 
             {error ? (
-              <Text style={{ fontSize: 13, color: '#EF4444', fontWeight: '500' }}>{error}</Text>
+              <Text style={{ fontSize: 13, color: c.red, fontWeight: '500' }}>{error}</Text>
             ) : null}
           </View>
         </View>
@@ -569,12 +570,13 @@ function PickerRow({ icon, iconBg, iconColor, label, displayValue, pickerTitle, 
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function SettingsScreen() {
+  const navigation = useNavigation();
   const { state, dispatch } = useApp();
   const { user, signOut, deleteAccount, reauthenticate } = useAuth();
   const c = useTheme();
   const s = useMemo(() => makeStyles(c), [c]);
 
-  const darkMode      = state.settings.darkMode;
+  const darkMode      = false; // permanently light — to revert: state.settings.darkMode
   const notifications = state.settings.notifications ?? true;
   const mealReminders = state.settings.mealReminders ?? true;
   const voiceEnabled  = state.settings.voiceEnabled  ?? true;
@@ -743,7 +745,7 @@ export default function SettingsScreen() {
     }
   };
 
-  const toggleDarkMode = (val) => dispatch({ type: 'SET_DARK_MODE', payload: val });
+  // toggleDarkMode removed — app is permanently light theme
 
   const switchProps = (value, onChange) => ({
     value,
@@ -775,11 +777,11 @@ export default function SettingsScreen() {
         {/* ── Daily Targets — computed from profile ── */}
         <SectionLabel label="Daily Targets" c={c} />
         <Card c={c}>
-          <RowItem c={c} icon="flame"   iconBg={darkMode ? '#2E1E0A' : '#FFF3E0'} iconColor={c.fire}    label="Calories"      value={`${targets.calories} kcal`} />
-          <RowItem c={c} icon="flash"   iconBg={darkMode ? '#2E1214' : '#FFF0F0'} iconColor={c.protein} label="Protein"       value={`${targets.protein}g`}      />
-          <RowItem c={c} icon="leaf"    iconBg={darkMode ? '#1E2E14' : '#F0FFF0'} iconColor={c.green}   label="Carbohydrates" value={`${targets.carbs}g`}        />
-          <RowItem c={c} icon="ellipse" iconBg={darkMode ? '#141A2E' : '#EFF6FF'} iconColor={c.fat}     label="Fats"          value={`${targets.fat}g`}          />
-          <RowItem c={c} icon="water"   iconBg={darkMode ? '#101A2E' : '#EFF6FF'} iconColor={c.water}   label="Water Target"  value={`${targets.water} ml`}      noBorder />
+          <RowItem c={c} icon="flame"   iconBg="#FCE9DC" iconColor={c.fire}    label="Calories"      value={`${targets.calories} kcal`} />
+          <RowItem c={c} icon="flash"   iconBg="#FCDCDC" iconColor={c.protein} label="Protein"       value={`${targets.protein}g`}      />
+          <RowItem c={c} icon="leaf"    iconBg="#E0EDDF" iconColor={c.green}   label="Carbohydrates" value={`${targets.carbs}g`}        />
+          <RowItem c={c} icon="ellipse" iconBg="#DCE8F8" iconColor={c.fat}     label="Fats"          value={`${targets.fat}g`}          />
+          <RowItem c={c} icon="water"   iconBg="#DCE8F8" iconColor={c.water}   label="Water Target"  value={`${targets.water} ml`}      noBorder />
         </Card>
 
         {/* ── Personal Info — fully editable, saves + recalculates targets ── */}
@@ -789,7 +791,7 @@ export default function SettingsScreen() {
 
           <PickerRow
             c={c} icon="calendar-outline" label="Age"
-            iconBg={darkMode ? '#1A2A2A' : '#F0FEFF'} iconColor={c.muted}
+            iconBg="#EDE8DF" iconColor={c.muted}
             displayValue={`${ageIdx + 13} yrs`}
             pickerTitle="Age"
             options={AGE_OPTIONS}
@@ -798,7 +800,7 @@ export default function SettingsScreen() {
           />
           <PickerRow
             c={c} icon="body-outline" label="Height"
-            iconBg={darkMode ? '#1A2A2A' : '#F0FEFF'} iconColor={c.muted}
+            iconBg="#EDE8DF" iconColor={c.muted}
             displayValue={HEIGHT_OPTIONS[htIdx]}
             pickerTitle="Height"
             options={HEIGHT_OPTIONS}
@@ -807,7 +809,7 @@ export default function SettingsScreen() {
           />
           <PickerRow
             c={c} icon="scale-outline" label="Weight"
-            iconBg={darkMode ? '#1A2A2A' : '#F0FEFF'} iconColor={c.muted}
+            iconBg="#EDE8DF" iconColor={c.muted}
             displayValue={`${wtIdx + 80} lbs`}
             pickerTitle="Weight"
             options={WEIGHT_OPTIONS}
@@ -816,7 +818,7 @@ export default function SettingsScreen() {
           />
           <PickerRow
             c={c} icon="flag-outline" label="Goal"
-            iconBg={darkMode ? '#1A2A2A' : '#F0FEFF'} iconColor={c.muted}
+            iconBg="#EDE8DF" iconColor={c.muted}
             displayValue={goalDisplay}
             pickerTitle="Goal"
             options={GOAL_OPTIONS}
@@ -825,7 +827,7 @@ export default function SettingsScreen() {
           />
           <PickerRow
             c={c} icon="fitness-outline" label="Activity Level"
-            iconBg={darkMode ? '#1A2A2A' : '#F0FEFF'} iconColor={c.muted}
+            iconBg="#EDE8DF" iconColor={c.muted}
             displayValue={activityDisplay}
             pickerTitle="Activity Level"
             options={ACTIVITY_OPTIONS}
@@ -840,32 +842,26 @@ export default function SettingsScreen() {
         <Card c={c}>
           <RowItem
             c={c}
-            icon="moon-outline" iconBg={darkMode ? '#1A1A3A' : '#F0EEFF'} iconColor={c.accent}
-            label="Dark Mode"
-            right={<Switch {...switchProps(darkMode, toggleDarkMode)} />}
-          />
-          <RowItem
-            c={c}
-            icon="notifications-outline" iconBg={darkMode ? '#2A1A1A' : '#FFF0F0'} iconColor={c.protein}
+            icon="notifications-outline" iconBg="#FCDCDC" iconColor={c.protein}
             label="Notifications"
             right={<Switch {...switchProps(notifications, (val) => dispatch({ type: 'SET_NOTIFICATIONS', payload: val }))} />}
           />
           <RowItem
             c={c}
-            icon="alarm-outline" iconBg={darkMode ? '#1A2A1A' : '#F0FFF0'} iconColor={c.green}
+            icon="alarm-outline" iconBg="#E0EDDF" iconColor={c.green}
             label="Meal Reminders"
             right={<Switch {...switchProps(mealReminders, (val) => dispatch({ type: 'SET_MEAL_REMINDERS', payload: val }))} />}
           />
           <RowItem
             c={c}
-            icon="volume-high-outline" iconBg={darkMode ? '#1A1A2E' : '#F0F0FF'} iconColor={c.accent}
+            icon="volume-high-outline" iconBg="rgba(94,140,97,0.15)" iconColor={c.accent}
             label="Voice Responses"
             value={voiceEnabled ? 'AI speaks replies aloud' : 'Text only'}
             right={<Switch {...switchProps(voiceEnabled, (val) => dispatch({ type: 'SET_VOICE_ENABLED', payload: val }))} />}
           />
           <RowItem
             c={c}
-            icon="globe-outline" iconBg={darkMode ? '#2A2A1A' : '#FFFAF0'} iconColor={c.carbs}
+            icon="globe-outline" iconBg="#F8EDCC" iconColor={c.carbs}
             label="Units"
             value={units}
             onPress={() => setUnits(units === 'Imperial' ? 'Metric' : 'Imperial')}
@@ -877,18 +873,24 @@ export default function SettingsScreen() {
         <SectionLabel label="Dietary Preferences" c={c} />
         <Card c={c}>
           <RowItem
-            c={c} icon="leaf-outline" iconBg={darkMode ? '#1A2A1A' : '#F0FFF0'} iconColor={c.green}
+            c={c} icon="leaf-outline" iconBg="#E0EDDF" iconColor={c.green}
             label="Dietary Restrictions"
             value={dietaryRestrictions.trim() || 'None'}
             onPress={() => setShowDietModal(true)}
           />
           <RowItem
-            c={c} icon="alert-circle-outline" iconBg={darkMode ? '#2E1414' : '#FFF0F0'} iconColor={c.red}
+            c={c} icon="alert-circle-outline" iconBg="#FCDCDC" iconColor={c.red}
             label="Allergies"
             value={allergies.trim() || 'None'}
             onPress={() => setShowAllergyModal(true)}
             noBorder
           />
+        </Card>
+
+        {/* ── Privacy ── */}
+        <SectionLabel label="Privacy" c={c} />
+        <Card c={c}>
+          <RowItem c={c} icon="shield-checkmark-outline" iconBg={c.card2} iconColor={c.accent} label="AI Data Usage" value="Manage what data is sent to AI services" onPress={() => navigation.navigate('AIDataUsageScreen')} noBorder />
         </Card>
 
         {/* ── Support ── */}
@@ -909,7 +911,7 @@ export default function SettingsScreen() {
             onPress={signOut}
             disabled={deleting}
           >
-            <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: darkMode ? '#2E1214' : '#FFF0F0', justifyContent: 'center', alignItems: 'center' }}>
+            <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: '#FCDCDC', justifyContent: 'center', alignItems: 'center' }}>
               <Ionicons name="log-out-outline" size={17} color={c.red} />
             </View>
             <Text style={{ fontSize: 14, fontWeight: '600', color: c.red }}>Sign Out</Text>
@@ -922,10 +924,10 @@ export default function SettingsScreen() {
             onPress={handleDeleteAccount}
             disabled={deleting}
           >
-            <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: darkMode ? '#2A1010' : '#FEE2E2', justifyContent: 'center', alignItems: 'center' }}>
+            <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: '#FCDCDC', justifyContent: 'center', alignItems: 'center' }}>
               {deleting
-                ? <ActivityIndicator size="small" color="#EF4444" />
-                : <Ionicons name="trash-outline" size={17} color="#EF4444" />
+                ? <ActivityIndicator size="small" color={c.red} />
+                : <Ionicons name="trash-outline" size={17} color={c.red} />
               }
             </View>
             <View style={{ flex: 1 }}>
@@ -940,15 +942,15 @@ export default function SettingsScreen() {
         </Card>
 
         {/* ── Developer (DEV or review account only — invisible to real users) ── */}
-        {(DEV_MODE || isReviewAccount(user)) && (
+        {isDevEnabled(user) && (
           <>
             <SectionLabel label="Developer" c={c} />
             <Card c={c}>
               <RowItem
                 c={c}
                 icon="construct-outline"
-                iconBg="#2A1F00"
-                iconColor="#F59E0B"
+                iconBg="#F8EDCC"
+                iconColor="#B8893A"
                 label="Open Paywall"
                 value="Reset subscription to test the paywall"
                 onPress={() => dispatch({
@@ -961,7 +963,7 @@ export default function SettingsScreen() {
           </>
         )}
 
-        <Text style={s.version}>FoodChat AI · v1.0.0 · SDK 54</Text>
+        <Text style={s.version}>Shred AI · v1.0.0 · SDK 54</Text>
         <View style={{ height: 20 }} />
 
       </ScrollView>

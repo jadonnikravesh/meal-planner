@@ -33,15 +33,16 @@ import {
   getCandidateImages, loadBrowseImages, searchFoodImages,
 } from '../utils/imageService';
 
-// ─── Palette ──────────────────────────────────────────────────────────────────
-const BG      = '#0E0E14';
-const CARD    = '#18182A';
-const CARD2   = '#1E1E30';
-const BORDER  = '#23233A';
-const WHITE   = '#FFFFFF';
-const MUTED   = '#7878A0';
-const ACCENT  = '#7C6FE0';
-const GREEN   = '#4CAF50';
+// ─── Palette (Shred AI light theme) ──────────────────────────────────────────
+// To revert: restore original dark values committed in git history
+const BG      = '#F6F1E8';
+const CARD    = '#FFFDF9';
+const CARD2   = '#EDE8DF';
+const BORDER  = '#E5DDD2';
+const WHITE   = '#1F2933';
+const MUTED   = '#8A8278';
+const ACCENT  = '#5E8C61';
+const GREEN   = '#5E8C61';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 

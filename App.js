@@ -1,8 +1,9 @@
-import { useState, useRef, useEffect, useCallback, useContext, useMemo } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import {
-  View, Text, TouchableOpacity, ActivityIndicator,
-  StyleSheet, Animated, Dimensions,
+  View, Text, TouchableOpacity,
+  StyleSheet, Animated, useWindowDimensions,
 } from 'react-native';
+import Svg, { Path } from 'react-native-svg';
 import * as SplashScreen from 'expo-splash-screen';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -13,411 +14,299 @@ import { Ionicons } from '@expo/vector-icons';
 import HomeScreen      from './src/screens/HomeScreen';
 import HelperScreen    from './src/screens/HelperScreen';
 import AnalyticsScreen from './src/screens/AnalyticsScreen';
-import SettingsScreen  from './src/screens/SettingsScreen';
+import SettingsScreen      from './src/screens/SettingsScreen';
+import PantryScreen        from './src/screens/PantryScreen';
+import AccountScreen       from './src/screens/AccountScreen';
+import PersonalInfoScreen  from './src/screens/PersonalInfoScreen';
+import SettingsPrefsScreen from './src/screens/SettingsPrefsScreen';
+import SupportScreen            from './src/screens/SupportScreen';
+import NutritionSourcesScreen   from './src/screens/NutritionSourcesScreen';
+import AIDataUsageScreen        from './src/screens/AIDataUsageScreen';
 import LoginScreen        from './src/screens/LoginScreen';
 import SignUpScreen       from './src/screens/SignUpScreen';
 import OnboardingScreen  from './src/screens/OnboardingScreen';
 import MealLogOverlay  from './src/components/MealLogOverlay';
 
-import { MealContextProvider, useMealContext } from './src/context/MealContext';
+import { MealContextProvider }               from './src/context/MealContext';
 import { AppProvider, useApp, useTheme }     from './src/context/AppContext';
 import { AuthProvider, useAuth }             from './src/context/AuthContext';
 import { MealOverlayContext }                from './src/context/OverlayContext';
-import { TtsProvider, useTts }               from './src/context/TtsContext';
-import { useVoiceInput }                     from './src/hooks/useVoiceInput';
+import { TtsProvider }                        from './src/context/TtsContext';
 import { useNotifications }                  from './src/notifications/NotificationManager';
 import WeightReviewModal                     from './src/components/WeightReviewModal';
 import PaywallScreen                         from './src/screens/PaywallScreen';
 import { TEST_MODE }                         from './src/config/testMode';
 import { estimateWeeklyWeightChange, isWeeklyReviewDue } from './src/utils/weightEstimation';
 import { getTodayKey }                       from './src/utils/nutrition';
-import { getOrFetchFoodImage, getFoodColor } from './src/utils/imageService';
-import { speakWithElevenLabs, initAudioSession } from './src/utils/ttsService';
-import { registerForPushNotifications, getStoredPushToken } from './src/utils/pushNotifications';
-import { generateJobId, enqueueJob, removeJob, updateJob } from './src/utils/jobQueue';
-import { useJobProcessor } from './src/hooks/useJobProcessor';
-import { computeFoodPreferences }            from './src/utils/foodPreferences';
-import { API_BASE_URL }                      from './src/config/api';
+import { initAudioSession }                  from './src/utils/ttsService';
+import { registerForPushNotifications }      from './src/utils/pushNotifications';
+import { useJobProcessor }                   from './src/hooks/useJobProcessor';
+import { useVoiceInput }                     from './src/hooks/useVoiceInput';
+import { VoiceChatProvider, useVoiceChat }   from './src/context/VoiceChatContext';
+import VoiceResponseOverlay                  from './src/components/VoiceResponseOverlay';
 import AppLoadingScreen                      from './src/components/AppLoadingScreen';
+import AIConsentModal                        from './src/components/AIConsentModal';
 
 // Hold the native splash until our custom screen is ready to take over.
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
 const Tab = createBottomTabNavigator();
 
-const BACKEND_URL = API_BASE_URL;
-
-// ─── Tab layout: 2 left, mic center, 2 right ─────────────────────────────────
+// ─── Tab layout: 2 left · mic center · 2 right ───────────────────────────────
 const LEFT_TABS = [
-  { name: 'Home',      icon: 'home-outline',     iconFocused: 'home'      },
-  { name: 'Analytics', icon: 'bar-chart-outline', iconFocused: 'bar-chart' },
+  { name: 'Home',   icon: 'home-outline',    iconFocused: 'home'   },
+  { name: 'Pantry', icon: 'basket-outline',  iconFocused: 'basket', beta: true, iconSize: 26, iconOffset: 8 },
 ];
 const RIGHT_TABS = [
-  { name: 'Helper',   icon: 'sparkles-outline', iconFocused: 'sparkles' },
-  { name: 'Settings', icon: 'settings-outline',  iconFocused: 'settings' },
+  { name: 'Helper',    icon: 'sparkles-outline',  iconFocused: 'sparkles'  },
+  { name: 'Analytics', icon: 'bar-chart-outline',  iconFocused: 'bar-chart' },
 ];
 
-// ─── Floating tab bar with built-in voice mic ─────────────────────────────────
+// ─── Floating tab bar ────────────────────────────────────────────────────────
 function FloatingTabBar({ state, navigation }) {
-  const c                                      = useTheme();
-  const insets                                 = useSafeAreaInsets();
-  const { isSpeaking, stop, markSpeaking, markStopped } = useTts();
-  const { state: appState, dispatch }          = useApp();
-  const { addMeal }                            = useMealContext();
-  const showOverlay                            = useContext(MealOverlayContext);
+  const c      = useTheme();
+  const insets = useSafeAreaInsets();
+  const { width: W } = useWindowDimensions();
+  const [barH, setBarH] = useState(80);
+  const SAFE = insets.bottom > 0 ? insets.bottom : 14;
 
-  const [processing, setProcessing] = useState(false);
+  // ── SVG notch geometry ──────────────────────────────────────────────────────
+  // The bar background is ONE continuous path. The notch is a true circular
+  // arc (SVG 'A' command), not a bezier approximation.
+  //
+  // R   = arc radius = FAB radius (31) + 8 px clearance = 39
+  // CX  = screen horizontal centre
+  //
+  // Arc geometry:
+  //   centre of the circular arc sits at (CX, 0) — the bar's top edge.
+  //   The arc runs from (CX-R, 0) clockwise through the bottom semicircle
+  //   to (CX+R, 0), dipping exactly R px into the bar at its lowest point.
+  //   This means the notch radius perfectly matches the FAB radius + padding,
+  //   so the bar visually "wraps" the button.
+  const CX = W / 2, R = 39;
 
-  // Recency-weighted preference list — recomputes only when logs change
-  const foodPreferences = useMemo(
-    () => computeFoodPreferences(appState.dailyLogs),
-    [appState.dailyLogs],
-  );
+  // Bar fill — concave circular notch is the literal absence of fill
+  const notchFill = [
+    `M 0,0`,
+    `L ${CX - R},0`,
+    `A ${R} ${R} 0 0 0 ${CX + R},0`,   // true circular arc, clockwise, dips R px
+    `L ${W},0`,
+    `L ${W},${barH}`,
+    `L 0,${barH}`,
+    `Z`,
+  ].join(' ');
 
-  // Pulsating rings for the mic FAB
-  const ring1    = useRef(new Animated.Value(1)).current;
-  const ring1Opa = useRef(new Animated.Value(0)).current;
-  const ring2    = useRef(new Animated.Value(1)).current;
-  const ring2Opa = useRef(new Animated.Value(0)).current;
-  const loopRef1 = useRef(null);
-  const loopRef2 = useRef(null);
+  // Top-edge stroke — same arc, just drawn as an open stroke for the border
+  const notchEdge = [
+    `M 0,0`,
+    `L ${CX - R},0`,
+    `A ${R} ${R} 0 0 0 ${CX + R},0`,
+    `L ${W},0`,
+  ].join(' ');
 
-  const startRings = () => {
-    loopRef1.current = Animated.loop(Animated.parallel([
-      Animated.sequence([
-        Animated.timing(ring1,    { toValue: 2.4, duration: 850, useNativeDriver: true }),
-        Animated.timing(ring1,    { toValue: 1,   duration: 850, useNativeDriver: true }),
-      ]),
-      Animated.sequence([
-        Animated.timing(ring1Opa, { toValue: 0.65, duration: 850, useNativeDriver: true }),
-        Animated.timing(ring1Opa, { toValue: 0,    duration: 850, useNativeDriver: true }),
-      ]),
-    ]));
-    loopRef2.current = Animated.loop(Animated.parallel([
-      Animated.sequence([
-        Animated.delay(420),
-        Animated.timing(ring2,    { toValue: 2.4,  duration: 850, useNativeDriver: true }),
-        Animated.timing(ring2,    { toValue: 1,    duration: 850, useNativeDriver: true }),
-      ]),
-      Animated.sequence([
-        Animated.delay(420),
-        Animated.timing(ring2Opa, { toValue: 0.38, duration: 850, useNativeDriver: true }),
-        Animated.timing(ring2Opa, { toValue: 0,    duration: 850, useNativeDriver: true }),
-      ]),
-    ]));
-    loopRef1.current.start();
-    loopRef2.current.start();
-  };
+  const { state: appState, dispatch: appDispatch } = useApp();
 
-  const stopRings = () => {
-    loopRef1.current?.stop();
-    loopRef2.current?.stop();
-    ring1.setValue(1); ring1Opa.setValue(0);
-    ring2.setValue(1); ring2Opa.setValue(0);
-  };
+  // ── AI consent (mic button) ─────────────────────────────────────────────────
+  const [showMicConsent, setShowMicConsent] = useState(false);
 
-  // ── Voice result — process in-place, never navigate ───────────────────────
-  const handleVoiceResult = useCallback(async (text) => {
-    if (!text?.trim()) return;
-    const trimmed = text.trim();
+  // ── Voice input ─────────────────────────────────────────────────────────────
+  const { sendVoiceMessage } = useVoiceChat();
 
-    // Immediately add the user message to shared chat history (HelperScreen syncs this)
-    const userMsgId = `msg_${Date.now()}_u`;
-    dispatch({ type: 'ADD_CHAT_MESSAGE', payload: { id: userMsgId, role: 'user', text: trimmed } });
+  const { isListening, isTranscribing, startListening, stopListening } =
+    useVoiceInput({ onResult: sendVoiceMessage });
 
-    setProcessing(true);
-    try {
-      const today     = getTodayKey();
-      const todayLog  = appState.dailyLogs?.[today] || {};
-      const profileForAI = {
-        ...appState.userProfile,
-        loggedCalories: todayLog.calories || 0,
-        loggedProtein:  todayLog.protein  || 0,
-        loggedCarbs:    todayLog.carbs    || 0,
-        loggedFat:      todayLog.fat      || 0,
-      };
-      // Use shared chat history for context (last 20 turns)
-      const historyForApi = appState.chatMessages.slice(-20).map((m) => ({
-        role:    m.role === 'user' ? 'user' : 'assistant',
-        content: m.text,
-      }));
+  const handleMicPress = useCallback(() => {
+    if (isListening || isTranscribing) { stopListening(); return; }
+    if (!appState.aiConsent) { setShowMicConsent(true); return; }
+    startListening();
+  }, [isListening, isTranscribing, startListening, stopListening, appState.aiConsent]);
 
-      // Build job payload — includes pushToken + jobId so the backend can send a
-      // push notification and the retry processor can dedup on re-attempt.
-      const pushToken  = await getStoredPushToken();
-      const jobId      = generateJobId();
-      const jobPayload = {
-        message: trimmed, history: historyForApi, userProfile: profileForAI,
-        foodPreferences, pushToken, jobId,
-      };
-      await enqueueJob(jobId, jobPayload);
+  const handleMicConsentAccept = useCallback(() => {
+    appDispatch({ type: 'SET_AI_CONSENT', payload: true });
+    setShowMicConsent(false);
+    startListening();
+  }, [appDispatch, startListening]);
 
-      const controller = new AbortController();
-      const fetchTimer = setTimeout(() => controller.abort(), 35_000);
-      console.log(`[tab-mic] Request started — job: ${jobId}`);
+  const handleMicConsentDecline = useCallback(() => {
+    setShowMicConsent(false);
+  }, []);
 
-      const res = await fetch(`${BACKEND_URL}/chat`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(jobPayload),
-        signal: controller.signal,
-      });
-      clearTimeout(fetchTimer);
-
-      if (!res.ok) {
-        await updateJob(jobId, { status: 'failed' });
-        throw new Error(`Server error ${res.status}`);
-      }
-      const data = await res.json();
-      await removeJob(jobId);
-      console.log(`[tab-mic] Request completed — job: ${jobId}`);
-
-      // Speak the AI response
-      if (appState.settings.voiceEnabled !== false && data.reply) {
-        speakWithElevenLabs(data.reply, { onStart: markSpeaking, onEnd: markStopped });
-      }
-
-      const validMeal = data.mealLogged && data.meal?.logged === true
-                     && data.meal?.name && (data.meal?.calories ?? 0) > 0;
-
-      let aiPayload = {
-        id:   `msg_${Date.now()}_a`,
-        role: 'ai',
-        text: data.reply || 'Logged!',
-      };
-
-      if (validMeal) {
-        const m = data.meal;
-        const { uri: finalUri, confidence } = await getOrFetchFoodImage(m.name);
-        const imgColor    = getFoodColor(m.imageKey || m.name);
-        const foodVerified = confidence === 'verified';
-
-        // Log to MealContext + AppContext (same path as HelperScreen)
-        addMeal({
-          id:          `meal_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-          name:        m.name,
-          time:        new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          kcal:        m.calories,
-          protein:     m.protein,
-          carbs:       m.carbs,
-          fat:         m.fat,
-          uri:         finalUri,
-          fallbackColor: imgColor,
-        });
-
-        // Show the overlay on whatever screen is currently visible
-        showOverlay({
-          name:     m.name,    calories: m.calories,
-          protein:  m.protein, carbs:    m.carbs,
-          fat:      m.fat,     imageUrl: finalUri,
-          reply:    data.reply,
-        });
-
-        // Attach mealData so HelperScreen renders the full meal card
-        const items = [{ name: m.name, calories: m.calories, protein: m.protein, carbs: m.carbs, fat: m.fat, grams: 0 }];
-        const total = { calories: m.calories, protein: m.protein, carbs: m.carbs, fat: m.fat };
-        aiPayload = {
-          ...aiPayload,
-          mealData: { items, total, primaryUri: finalUri, fallbackColor: imgColor, imageConfidence: confidence, voteStats: {} },
-        };
-      }
-
-      dispatch({ type: 'ADD_CHAT_MESSAGE', payload: aiPayload });
-
-    } catch (err) {
-      const isTimeout = err.name === 'AbortError';
-      const isOffline = !isTimeout && (
-        err.message.includes('Failed to fetch') || err.message.includes('Network')
-      );
-      // AbortError = timeout: job stays 'pending' — the server may still be processing it
-      // and will send a push notification when done. All other errors: mark failed so
-      // the retry processor picks it up immediately on next foreground.
-      if (!isTimeout) {
-        updateJob(jobId, { status: 'failed' }).catch(() => {});
-      }
-      console.warn(`[tab-mic] Request failed — ${isTimeout ? 'timed out after 35s' : err.message}`);
-      dispatch({
-        type: 'ADD_CHAT_MESSAGE',
-        payload: {
-          id:   `msg_${Date.now()}_err`,
-          role: 'ai',
-          text: isTimeout
-            ? "Taking longer than expected. Your message is saved — you'll get a notification when it's processed."
-            : isOffline
-              ? "No connection right now. Your message is saved and will be sent when you're back online."
-              : `⚠️ Error: ${err.message}`,
-        },
-      });
-    } finally {
-      setProcessing(false);
-    }
-  }, [appState, dispatch, addMeal, showOverlay, markSpeaking, markStopped]);
-
-  const { isListening, isSupported, startListening, stopListening } =
-    useVoiceInput({ onResult: handleVoiceResult });
+  // ── Pulse animation while listening ────────────────────────────────────────
+  const ring1Scale   = useRef(new Animated.Value(1)).current;
+  const ring1Opacity = useRef(new Animated.Value(0)).current;
+  const ring2Scale   = useRef(new Animated.Value(1)).current;
+  const ring2Opacity = useRef(new Animated.Value(0)).current;
+  const pulseRef     = useRef(null);
 
   useEffect(() => {
-    if (isListening) startRings();
-    else             stopRings();
+    if (isListening) {
+      pulseRef.current = Animated.loop(
+        Animated.parallel([
+          Animated.sequence([
+            Animated.timing(ring1Scale,   { toValue: 1.65, duration: 900, useNativeDriver: true }),
+            Animated.timing(ring1Scale,   { toValue: 1,    duration: 900, useNativeDriver: true }),
+          ]),
+          Animated.sequence([
+            Animated.timing(ring1Opacity, { toValue: 0.55, duration: 900, useNativeDriver: true }),
+            Animated.timing(ring1Opacity, { toValue: 0,    duration: 900, useNativeDriver: true }),
+          ]),
+          Animated.sequence([
+            Animated.delay(450),
+            Animated.timing(ring2Scale,   { toValue: 1.65, duration: 900, useNativeDriver: true }),
+            Animated.timing(ring2Scale,   { toValue: 1,    duration: 900, useNativeDriver: true }),
+          ]),
+          Animated.sequence([
+            Animated.delay(450),
+            Animated.timing(ring2Opacity, { toValue: 0.35, duration: 900, useNativeDriver: true }),
+            Animated.timing(ring2Opacity, { toValue: 0,    duration: 900, useNativeDriver: true }),
+          ]),
+        ])
+      );
+      pulseRef.current.start();
+    } else {
+      pulseRef.current?.stop();
+      ring1Scale.setValue(1); ring1Opacity.setValue(0);
+      ring2Scale.setValue(1); ring2Opacity.setValue(0);
+    }
   }, [isListening]);
 
-  const handleMicPress = () => {
-    if (!isSupported || processing) return;
-    if (isListening) stopListening();
-    else             startListening();
-  };
-
-  // ── Render ─────────────────────────────────────────────────────────────────
   const currentRoute = state.routes[state.index].name;
   const goTo = (name) => navigation.navigate(name);
-
-  const micColor = isListening ? c.red : processing ? c.tabInactive : c.accent;
+  const micColor = isListening ? '#E84B4B' : c.accent;
 
   const TabBtn = ({ tab }) => {
     const focused = currentRoute === tab.name;
     const color   = focused ? c.accent : c.tabInactive;
     return (
       <TouchableOpacity onPress={() => goTo(tab.name)} activeOpacity={0.7} style={s.tabBtn}>
-        <Ionicons name={focused ? tab.iconFocused : tab.icon} size={22} color={color} />
+        <View style={{ position: 'relative' }}>
+          <Ionicons name={focused ? tab.iconFocused : tab.icon} size={tab.iconSize ?? 22} color={color} style={tab.iconOffset ? { transform: [{ translateY: tab.iconOffset }] } : undefined} />
+          {tab.beta && (
+            <View style={[s.betaBadge, { backgroundColor: c.accent }]}>
+              <Text style={s.betaBadgeText}>beta</Text>
+            </View>
+          )}
+        </View>
         <Text style={[s.tabLabel, { color }]}>{tab.name}</Text>
       </TouchableOpacity>
     );
   };
 
   return (
-    <View style={[s.barOuter, { paddingBottom: insets.bottom > 0 ? insets.bottom : 10 }]}>
-      <View style={[s.pill, { backgroundColor: c.tabBar, borderColor: c.tabBorder }]}>
+    <View style={[s.barOuter, { zIndex: 9999, elevation: 9999 }]}>
 
-        {LEFT_TABS.map((tab)  => <TabBtn key={tab.name} tab={tab} />)}
+      {/* 1 ── SVG bar background with carved notch (renders first = behind tabs) */}
+      <Svg
+        width={W}
+        height={barH}
+        style={StyleSheet.absoluteFill}
+        pointerEvents="none"
+      >
+        {/* Bar fill with notch cutout */}
+        <Path d={notchFill} fill={c.tabBar} />
+        {/* Thin hairline border along the top edge, following the notch curve */}
+        <Path d={notchEdge} fill="none" stroke={c.tabBorder} strokeWidth={1} />
+      </Svg>
 
-        {/* ── Center mic FAB ── */}
-        <View style={s.fabSlot}>
-          {/* Pulsating rings */}
-          <Animated.View style={[s.ring, { borderColor: micColor, transform: [{ scale: ring1 }], opacity: ring1Opa }]} />
-          <Animated.View style={[s.ring, { borderColor: micColor, transform: [{ scale: ring2 }], opacity: ring2Opa }]} />
+      {/* Bar top-edge shadow — two strips, left and right of the notch.
+           Splitting avoids painting a visible background line across the
+           transparent notch opening. */}
+      <View style={{ position:'absolute', top:0, left:0, width: CX - R, height:2, backgroundColor:c.tabBar, shadowColor:'#000', shadowOffset:{width:0,height:-6}, shadowOpacity:0.18, shadowRadius:10 }} />
+      <View style={{ position:'absolute', top:0, left: CX + R, right:0, height:2, backgroundColor:c.tabBar, shadowColor:'#000', shadowOffset:{width:0,height:-6}, shadowOpacity:0.18, shadowRadius:10 }} />
 
-          <TouchableOpacity
-            style={[s.fab, { backgroundColor: micColor, shadowColor: micColor }]}
-            onPress={handleMicPress}
-            activeOpacity={0.85}
-          >
-            {processing
-              ? <ActivityIndicator size="small" color="#FFF" />
-              : <Ionicons name={isListening ? 'mic' : 'mic-outline'} size={26} color="#FFF" />
-            }
-          </TouchableOpacity>
-
-          {/* Status label below FAB */}
-          {isListening && !processing && (
-            <Text style={[s.listenLabel, { color: c.red }]}>Listening…</Text>
-          )}
-          {processing && (
-            <Text style={[s.listenLabel, { color: c.accent }]}>Thinking…</Text>
-          )}
-
-          {/* Stop TTS button — floats above-right of mic while AI is speaking */}
-          {isSpeaking && (
-            <TouchableOpacity
-              onPress={stop}
-              activeOpacity={0.8}
-              style={s.stopBtn}
-            >
-              <Ionicons name="stop-circle" size={13} color="#fff" />
-              <Text style={s.stopBtnText}>Stop</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-
+      {/* 2 ── Tab items — normal flow child that drives barOuter height */}
+      <View
+        style={[s.tabsRow, { paddingBottom: SAFE }]}
+        onLayout={(e) => setBarH(e.nativeEvent.layout.height)}
+      >
+        {LEFT_TABS.map((tab) => <TabBtn key={tab.name} tab={tab} />)}
+        <View style={s.fabSpacer} />
         {RIGHT_TABS.map((tab) => <TabBtn key={tab.name} tab={tab} />)}
-
       </View>
+
+      {/* 3 ── Floating mic FAB — no backing view, notch is purely the SVG path */}
+      <View style={s.fabWrapper} pointerEvents="box-none">
+        <Animated.View style={[s.fabRing, { borderColor: micColor, transform: [{ scale: ring1Scale }], opacity: ring1Opacity }]} />
+        <Animated.View style={[s.fabRing, { borderColor: micColor, transform: [{ scale: ring2Scale }], opacity: ring2Opacity }]} />
+        <TouchableOpacity
+          style={[s.fab, { backgroundColor: micColor }]}
+          onPress={handleMicPress}
+          activeOpacity={0.85}
+        >
+          <Ionicons name={isListening ? 'mic' : 'mic-outline'} size={24} color="#FFF" />
+        </TouchableOpacity>
+        <Text style={[s.tabLabel, { color: c.tabInactive, marginTop: 18, fontSize: 12 }]}>Speak</Text>
+      </View>
+
+      <AIConsentModal
+        visible={showMicConsent}
+        onAccept={handleMicConsentAccept}
+        onDecline={handleMicConsentDecline}
+      />
     </View>
   );
 }
 
 const s = StyleSheet.create({
   barOuter: {
-    position:         'absolute',
-    bottom:           0,
-    left:             0,
-    right:            0,
-    alignItems:       'center',
-    paddingHorizontal: 14,
-    paddingTop:       10,
+    position: 'absolute',
+    bottom: 0, left: 0, right: 0,
+    overflow: 'visible',
   },
-  pill: {
-    flexDirection:    'row',
-    alignItems:       'center',
-    width:            '100%',
-    borderRadius:     40,
-    borderWidth:      1,
-    paddingHorizontal: 8,
-    paddingVertical:  10,
-    shadowColor:      '#000',
-    shadowOffset:     { width: 0, height: 8 },
-    shadowOpacity:    0.20,
-    shadowRadius:     22,
-    elevation:        18,
+
+  tabsRow: {
+    flexDirection: 'row',
+    alignItems:    'center',
+    paddingTop:    10,
   },
+
   tabBtn: {
-    flex:           1,
-    alignItems:     'center',
-    justifyContent: 'center',
-    gap:            3,
-    paddingVertical: 2,
+    flex:            1,
+    alignItems:      'center',
+    justifyContent:  'center',
+    paddingVertical: 5,
+    gap:             3,
   },
-  tabLabel: {
-    fontSize:   10,
-    fontWeight: '600',
+  tabLabel: { fontSize: 10, fontWeight: '700' },
+
+  betaBadge: {
+    position: 'absolute', top: -4, right: -8,
+    borderRadius: 4, paddingHorizontal: 3, paddingVertical: 1,
   },
-  fabSlot: {
-    width:          68,
-    alignItems:     'center',
-    justifyContent: 'center',
-    marginHorizontal: 2,
+  betaBadgeText: { fontSize: 8, fontWeight: '700', color: '#FFF', lineHeight: 10 },
+
+  // Space in the flex row reserved for the FAB
+  fabSpacer: { width: 80 },
+
+  // FAB center sits exactly on the bar's top edge: 50% above, 50% below.
+  // top = -(FAB radius) = -31
+  fabWrapper: {
+    position:   'absolute',
+    top:        -31,
+    left:       0,
+    right:      0,
+    alignItems: 'center',
+    zIndex:     10,
+    overflow:   'visible',
   },
-  ring: {
-    position:     'absolute',
-    width:  56, height: 56, borderRadius: 28,
-    borderWidth:  2.5,
+
+  fabRing: {
+    position: 'absolute',
+    width: 62, height: 62, borderRadius: 31,
+    borderWidth: 2,
   },
+
   fab: {
-    width:  56, height: 56, borderRadius: 28,
+    width: 62, height: 62, borderRadius: 31,
     alignItems:     'center',
     justifyContent: 'center',
-    shadowOffset:   { width: 0, height: 4 },
-    shadowOpacity:  0.5,
+    borderWidth:    3,
+    borderColor:    '#FFFFFF',
+    shadowColor:    '#000',
+    shadowOffset:   { width: 0, height: 0 },
+    shadowOpacity:  0.20,
     shadowRadius:   12,
     elevation:      12,
-  },
-  listenLabel: {
-    position:   'absolute',
-    bottom:     -18,
-    fontSize:   9,
-    fontWeight: '700',
-    letterSpacing: 0.3,
-  },
-  stopBtn: {
-    position:        'absolute',
-    top:             -34,
-    flexDirection:   'row',
-    alignItems:      'center',
-    gap:             4,
-    backgroundColor: '#EF4444',
-    borderRadius:    14,
-    paddingHorizontal: 9,
-    paddingVertical:   5,
-    shadowColor:     '#EF4444',
-    shadowOffset:    { width: 0, height: 2 },
-    shadowOpacity:   0.45,
-    shadowRadius:    6,
-    elevation:       8,
-  },
-  stopBtnText: {
-    color:       '#fff',
-    fontSize:    11,
-    fontWeight:  '700',
-    letterSpacing: 0.3,
   },
 });
 
@@ -479,22 +368,30 @@ function AppNavigator() {
   return (
     <TtsProvider>
     <MealOverlayContext.Provider value={showOverlay}>
-      {/* Root View gives absoluteFillObject a reliable full-screen anchor */}
-      <View style={{ flex: 1 }}>
+    <VoiceChatProvider>
+      <View style={{ flex: 1 }} pointerEvents="box-none">
         <NotificationSetup />
         <AudioSetup />
         <PushSetup />
         <JobProcessor />
         <StatusBar style={c.statusBar} backgroundColor={c.bg} />
-        <NavigationContainer>
+        <NavigationContainer theme={{ dark: false, colors: { primary: c.accent, background: c.bg, card: c.card, text: c.white, border: c.border, notification: c.accent } }}>
           <Tab.Navigator
             tabBar={(props) => <FloatingTabBar {...props} />}
-            screenOptions={{ headerShown: false }}
+            screenOptions={{ headerShown: false, contentStyle: { backgroundColor: c.bg } }}
           >
-            <Tab.Screen name="Home"      component={HomeScreen} />
-            <Tab.Screen name="Helper"    component={HelperScreen} />
-            <Tab.Screen name="Analytics" component={AnalyticsScreen} />
-            <Tab.Screen name="Settings"  component={SettingsScreen} />
+            <Tab.Screen name="Home"            component={HomeScreen}        />
+            <Tab.Screen name="Analytics"      component={AnalyticsScreen}   />
+            <Tab.Screen name="Helper"         component={HelperScreen}      />
+            <Tab.Screen name="Pantry"         component={PantryScreen}      />
+            {/* Hidden screens — accessible via profile dropdown */}
+            <Tab.Screen name="Settings"          component={SettingsScreen}       options={{ tabBarButton: () => null }} />
+            <Tab.Screen name="AccountScreen"     component={AccountScreen}        options={{ tabBarButton: () => null }} />
+            <Tab.Screen name="PersonalInfoScreen"  component={PersonalInfoScreen} options={{ tabBarButton: () => null }} />
+            <Tab.Screen name="SettingsPrefsScreen" component={SettingsPrefsScreen} options={{ tabBarButton: () => null }} />
+            <Tab.Screen name="SupportScreen"          component={SupportScreen}          options={{ tabBarButton: () => null }} />
+            <Tab.Screen name="NutritionSourcesScreen" component={NutritionSourcesScreen} options={{ tabBarButton: () => null }} />
+            <Tab.Screen name="AIDataUsageScreen"      component={AIDataUsageScreen}      options={{ tabBarButton: () => null }} />
           </Tab.Navigator>
         </NavigationContainer>
 
@@ -505,6 +402,9 @@ function AppNavigator() {
           onClose={() => setOverlayMeal(null)}
         />
 
+        {/* Voice AI response — floats above current screen, auto-dismisses */}
+        <VoiceResponseOverlay />
+
         {/* Weekly weight check-in — renders above everything */}
         <WeightReviewModal
           visible={!!weeklyReviewData}
@@ -513,6 +413,7 @@ function AppNavigator() {
           onDismiss={handleWeightDismiss}
         />
       </View>
+    </VoiceChatProvider>
     </MealOverlayContext.Provider>
     </TtsProvider>
   );
@@ -542,15 +443,14 @@ function RootNavigator() {
   const [testOnboarded, setTestOnboarded] = useState(false);
   const lastUidRef = useRef(null);
 
-  // Custom splash state — starts visible and fades out once the app is ready.
+  // Custom splash state — starts visible and fades out once both the app is ready
+  // and the loading animation has completed.
   const [splashVisible, setSplashVisible] = useState(true);
+  const [animationDone, setAnimationDone] = useState(false);
   const splashOpacity = useRef(new Animated.Value(1)).current;
   const splashDoneRef = useRef(false);
 
-  // Dismiss the native splash immediately so our branded screen takes over.
-  useEffect(() => {
-    SplashScreen.hideAsync().catch(() => {});
-  }, []);
+  // Native splash is hidden by AppLoadingScreen via onLayout — do not hide here.
 
   useEffect(() => {
     const uid = user?.uid ?? null;
@@ -566,17 +466,18 @@ function RootNavigator() {
     }
   }, [user?.uid, dispatch]);
 
-  // Fade out once both Firebase auth and AsyncStorage have resolved.
-  const appReady = !authLoading && stateLoaded;
+  // Fade out once Firebase auth, AsyncStorage, and the scale animation are all done.
+  const appReady  = !authLoading && stateLoaded;
+  const bothReady = appReady && animationDone;
   useEffect(() => {
-    if (!appReady || splashDoneRef.current) return;
+    if (!bothReady || splashDoneRef.current) return;
     splashDoneRef.current = true;
     Animated.timing(splashOpacity, {
       toValue:         0,
-      duration:        480,
+      duration:        300,
       useNativeDriver: true,
     }).start(() => setSplashVisible(false));
-  }, [appReady]);
+  }, [bothReady]);
 
   function renderContent() {
     if (!user) return <AuthScreens />;
@@ -592,7 +493,7 @@ function RootNavigator() {
       );
     }
 
-    const hasSub = ['trial', 'active', 'lifetime_free'].includes(state.subscription?.status);
+    const hasSub = ['trial', 'active'].includes(state.subscription?.status);
     if (!hasSub) return <PaywallScreen />;
 
     return <AppNavigator />;
@@ -608,7 +509,7 @@ function RootNavigator() {
           pointerEvents="none"
           style={[StyleSheet.absoluteFillObject, { opacity: splashOpacity }]}
         >
-          <AppLoadingScreen />
+          <AppLoadingScreen onAnimationComplete={() => setAnimationDone(true)} />
         </Animated.View>
       )}
     </View>

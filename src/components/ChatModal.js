@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   View, Text, Modal, TouchableOpacity, TextInput,
   ScrollView, StyleSheet, Image, KeyboardAvoidingView,
@@ -8,29 +8,29 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { isFoodLog, parseFoodMessage, formatTime } from '../utils/foodParser';
 import { useMealContext } from '../context/MealContext';
-import { useVoiceInput } from '../hooks/useVoiceInput';
 import { getCorrection, saveCorrection, applyCorrections } from '../utils/imageCorrections';
 import { getTodayKey } from '../utils/nutrition';
 import ImageFeedbackModal from './ImageFeedbackModal';
 
-// ─── Palette ──────────────────────────────────────────────────────────────────
-const BG        = '#0E0E14';
-const CARD      = '#18182A';
-const CARD2     = '#1E1E30';
-const BORDER    = '#23233A';
-const WHITE     = '#FFFFFF';
-const MUTED     = '#7878A0';
-const ACCENT    = '#7C6FE0';
-const ACCENT_DIM = '#2E2A5C';
-const INPUT_BG  = '#131325';
-const GREEN     = '#4CAF50';
-const GREEN_DIM = '#0A2A0A';
-const RED       = '#E84B4B';
-const RED_DIM   = '#2E0A0A';
-const FIRE      = '#FF6B00';
-const PROTEIN   = '#E86B6B';
-const CARBS     = '#D4A557';
-const FAT       = '#4E8FD9';
+// ─── Palette (Shred AI light theme) ──────────────────────────────────────────
+// To revert: restore original dark values committed in git history
+const BG        = '#F6F1E8';
+const CARD      = '#FFFDF9';
+const CARD2     = '#EDE8DF';
+const BORDER    = '#E5DDD2';
+const WHITE     = '#1F2933';
+const MUTED     = '#8A8278';
+const ACCENT    = '#5E8C61';
+const ACCENT_DIM = 'rgba(94,140,97,0.12)';
+const INPUT_BG  = '#EDE8DF';
+const GREEN     = '#5E8C61';
+const GREEN_DIM = 'rgba(94,140,97,0.12)';
+const RED       = '#C84040';
+const RED_DIM   = 'rgba(200,64,64,0.10)';
+const FIRE      = '#D97745';
+const PROTEIN   = '#C0504A';
+const CARBS     = '#B8893A';
+const FAT       = '#4A80C4';
 
 // ─── Canned AI responses ─────────────────────────────────────────────────────
 const CANNED = [
@@ -248,98 +248,15 @@ function MealLogCard({ items, total, primaryUri, fallbackColor, mealId, onImageT
   );
 }
 
-/**
- * Mic button with animated pulse ring when listening.
- * - isListening  → red background + pulsing ring
- * - !isSupported → shown as disabled (muted, non-interactive)
- * - error        → red tint on icon
- */
-function MicButton({ isListening, isSupported, onPress }) {
-  const ring = useRef(new Animated.Value(1)).current;
-  const ringOpacity = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    if (isListening) {
-      Animated.loop(
-        Animated.parallel([
-          Animated.sequence([
-            Animated.timing(ring,        { toValue: 1.8, duration: 700, useNativeDriver: true }),
-            Animated.timing(ring,        { toValue: 1,   duration: 700, useNativeDriver: true }),
-          ]),
-          Animated.sequence([
-            Animated.timing(ringOpacity, { toValue: 0.5, duration: 700, useNativeDriver: true }),
-            Animated.timing(ringOpacity, { toValue: 0,   duration: 700, useNativeDriver: true }),
-          ]),
-        ])
-      ).start();
-    } else {
-      ring.setValue(1);
-      ringOpacity.setValue(0);
-    }
-  }, [isListening]);
-
-  return (
-    <TouchableOpacity
-      style={[
-        s.micBtn,
-        isListening && s.micBtnActive,
-        !isSupported && s.micBtnDisabled,
-      ]}
-      onPress={onPress}
-      activeOpacity={isSupported ? 0.75 : 1}
-      disabled={!isSupported}
-    >
-      {/* Pulse ring (only when listening) */}
-      {isListening && (
-        <Animated.View
-          style={[
-            s.micPulseRing,
-            { transform: [{ scale: ring }], opacity: ringOpacity },
-          ]}
-        />
-      )}
-      <Ionicons
-        name={isListening ? 'mic' : 'mic-outline'}
-        size={18}
-        color={isListening ? WHITE : isSupported ? MUTED : BORDER}
-      />
-    </TouchableOpacity>
-  );
-}
-
-// ─── Recording status bar ─────────────────────────────────────────────────────
-
-function RecordingBar({ isListening, transcript, error }) {
-  if (!isListening && !error) return null;
-
-  if (error) {
-    return (
-      <View style={[s.recordingBar, s.recordingBarError]}>
-        <Ionicons name="alert-circle" size={13} color={RED} />
-        <Text style={[s.recordingText, { color: RED }]} numberOfLines={1}>{error}</Text>
-      </View>
-    );
-  }
-
-  return (
-    <View style={s.recordingBar}>
-      <Ionicons name="mic" size={13} color={RED} />
-      <Text style={s.recordingText} numberOfLines={1}>
-        {transcript ? `"${transcript}"` : 'Listening…'}
-      </Text>
-    </View>
-  );
-}
-
 // ─── Main component ───────────────────────────────────────────────────────────
 
 const GREETING = {
   id: 0,
   role: 'ai',
   text:
-    "Hi! I'm your FoodChat AI Food Assistant 🤖\n\n" +
+    "Hi! I'm your Shred AI Food Assistant 🤖\n\n" +
     "Tell me what you ate — like \"I had 3 eggs and a bowl of oatmeal\" — and I'll log the full calories and macros to your dashboard automatically.\n\n" +
-    "Tap the 🎤 mic in the bottom nav to speak your meal!",
+    "Type a meal below and I'll log it automatically!",
 };
 
 export default function ChatModal({ visible, onClose, startWithVoice = false }) {
@@ -361,36 +278,6 @@ export default function ChatModal({ visible, onClose, startWithVoice = false }) 
   }, [messages, typing]);
 
   useEffect(() => () => clearTimeout(timerRef.current), []);
-
-  // ── Voice: when a final transcript arrives, populate input and send ──────
-  const handleVoiceResult = useCallback((finalText) => {
-    setInput(finalText);
-    // Small delay so the user sees the populated text before it sends
-    setTimeout(() => dispatchSend(finalText), 400);
-  }, []);
-
-  const {
-    isSupported,
-    isListening,
-    transcript,
-    error: voiceError,
-    startListening,
-    stopListening,
-  } = useVoiceInput({ onResult: handleVoiceResult });
-
-  // ── Auto-start voice when opened from the "Speak to AI" FAB ─────────────
-  useEffect(() => {
-    if (visible && startWithVoice && isSupported) {
-      // Wait for modal slide-in animation before capturing mic
-      const t = setTimeout(() => startListening(), 650);
-      return () => clearTimeout(t);
-    }
-  }, [visible, startWithVoice]);
-
-  const handleMicPress = () => {
-    if (isListening) stopListening();
-    else             startListening();
-  };
 
   // ── Image feedback handler ────────────────────────────────────────────────
   const handleFeedback = async (selectedUri) => {
@@ -541,13 +428,6 @@ export default function ChatModal({ visible, onClose, startWithVoice = false }) 
           {typing && <TypingBubble />}
         </ScrollView>
 
-        {/* ── Recording status bar (voice only) ── */}
-        <RecordingBar
-          isListening={isListening}
-          transcript={transcript}
-          error={voiceError}
-        />
-
         {/* ── Input bar ── */}
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -557,34 +437,26 @@ export default function ChatModal({ visible, onClose, startWithVoice = false }) 
             <TextInput
               ref={inputRef}
               style={s.input}
-              value={isListening ? transcript : input}
+              value={input}
               onChangeText={setInput}
               placeholder='e.g. "I had 3 eggs and a bowl of oatmeal"'
               placeholderTextColor={MUTED}
               multiline
-              editable={!isListening}
               onSubmitEditing={handleSend}
               returnKeyType="send"
               blurOnSubmit
             />
 
-            {/* ── Mic button ── */}
-            <MicButton
-              isListening={isListening}
-              isSupported={isSupported}
-              onPress={handleMicPress}
-            />
-
             {/* ── Send button ── */}
             <TouchableOpacity
-              style={[s.sendBtn, (input.trim() || transcript.trim()) && s.sendBtnActive]}
+              style={[s.sendBtn, input.trim() && s.sendBtnActive]}
               onPress={handleSend}
               activeOpacity={0.8}
             >
               <Ionicons
                 name="send"
                 size={18}
-                color={(input.trim() || transcript.trim()) ? WHITE : MUTED}
+                color={input.trim() ? WHITE : MUTED}
               />
             </TouchableOpacity>
           </View>
@@ -681,11 +553,6 @@ const s = StyleSheet.create({
   mealCardFooterText:  { fontSize: 12, color: GREEN, fontWeight: '600' },
   mealCardFooterTap:   { fontSize: 12, color: MUTED },
 
-  // ── Recording status bar ──────────────────────────────────────────────────
-  recordingBar:      { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: RED_DIM, paddingHorizontal: 18, paddingVertical: 8, borderTopWidth: 1, borderTopColor: RED + '33' },
-  recordingBarError: { backgroundColor: RED_DIM },
-  recordingText:     { fontSize: 13, color: RED, flex: 1 },
-
   // ── Input bar ────────────────────────────────────────────────────────────
   inputBar: {
     flexDirection: 'row', alignItems: 'flex-end', gap: 8,
@@ -697,22 +564,7 @@ const s = StyleSheet.create({
     paddingHorizontal: 16, paddingVertical: 11, fontSize: 14, color: WHITE, maxHeight: 120,
   },
 
-  // Mic button
-  micBtn: {
-    width: 44, height: 44, borderRadius: 22,
-    backgroundColor: CARD, justifyContent: 'center', alignItems: 'center',
-    borderWidth: 1, borderColor: BORDER,
-    overflow: 'visible',       // so the pulse ring isn't clipped
-  },
-  micBtnActive:   { backgroundColor: RED,   borderColor: RED },
-  micBtnDisabled: { opacity: 0.3 },
-  micPulseRing: {
-    position: 'absolute',
-    width: 44, height: 44, borderRadius: 22,
-    borderWidth: 2, borderColor: RED,
-  },
-
-  // Send button (unchanged)
+  // Send button
   sendBtn:       { width: 44, height: 44, borderRadius: 22, backgroundColor: CARD, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: BORDER },
   sendBtnActive: { backgroundColor: ACCENT, borderColor: ACCENT },
 });

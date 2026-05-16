@@ -21,7 +21,7 @@ Notifications.setNotificationHandler({
 // ─── Android notification channel ────────────────────────────────────────────
 if (Platform.OS === 'android') {
   Notifications.setNotificationChannelAsync('fitai', {
-    name:       'FoodChat AI Reminders',
+    name:       'Shred AI Reminders',
     importance: Notifications.AndroidImportance.DEFAULT,
     sound:      'default',
   });

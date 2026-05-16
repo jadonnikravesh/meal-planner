@@ -1,16 +1,30 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity, Image, Animated,
+  View, Text, ScrollView, TouchableOpacity, Image, Animated, Modal, StyleSheet,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Circle } from 'react-native-svg';
 import { useNavigation } from '@react-navigation/native';
 import { useTheme, useApp } from '../context/AppContext';
 import { useMealContext } from '../context/MealContext';
+import { useAuth } from '../context/AuthContext';
 import MealEditModal from '../components/MealEditModal';
 import { getTodayKey, getDateKey, computeStreak } from '../utils/nutrition';
+
+// ─── Color interpolation ──────────────────────────────────────────────────────
+// Blends two hex colors by t (0 = a, 1 = b)
+function lerpHex(a, b, t) {
+  const ah = parseInt(a.replace('#', ''), 16);
+  const bh = parseInt(b.replace('#', ''), 16);
+  const ar = (ah >> 16) & 0xff, ag = (ah >> 8) & 0xff, ab = ah & 0xff;
+  const br = (bh >> 16) & 0xff, bg = (bh >> 8) & 0xff, bb = bh & 0xff;
+  const r = Math.round(ar + (br - ar) * t);
+  const g = Math.round(ag + (bg - ag) * t);
+  const b_ = Math.round(ab + (bb - ab) * t);
+  return '#' + [r, g, b_].map((v) => v.toString(16).padStart(2, '0')).join('');
+}
 
 // ─── Date helpers ─────────────────────────────────────────────────────────────
 function shiftDate(dateKey, days) {
@@ -250,7 +264,7 @@ function MealCard({ meal, c, onPress }) {
       <View style={{ flexDirection: 'row', padding: 12, gap: 12, alignItems: 'center' }}>
         <Image
           source={{ uri: meal.uri }}
-          style={{ width: 72, height: 72, borderRadius: 12, flexShrink: 0, backgroundColor: meal.fallbackColor || '#2A2A3A' }}
+          style={{ width: 72, height: 72, borderRadius: 12, flexShrink: 0, backgroundColor: meal.fallbackColor || '#EDE8DF' }}
           resizeMode="cover"
         />
         {/* minWidth: 0 is required for flex children to shrink below their content size */}
@@ -303,11 +317,119 @@ function EmptyMeals({ c, isToday }) {
   );
 }
 
+// ─── Profile dropdown ─────────────────────────────────────────────────────────
+const PROFILE_MENU = [
+  { icon: 'person-outline',      label: 'Account',       screen: 'AccountScreen'       },
+  { icon: 'body-outline',        label: 'Personal Info', screen: 'PersonalInfoScreen'  },
+  { icon: 'settings-outline',    label: 'Settings',      screen: 'SettingsPrefsScreen' },
+  { icon: 'help-circle-outline', label: 'Support',       screen: 'SupportScreen'       },
+];
+
+function ProfileDropdown({ visible, onClose, onNavigate, user, profile, goals, c, topOffset }) {
+  const name  = user?.displayName || profile?.name || 'User';
+  const email = user?.email || '';
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <TouchableOpacity style={StyleSheet.absoluteFill} onPress={onClose} activeOpacity={1} />
+      <View style={[pd.card, { backgroundColor: c.card, borderColor: c.border, top: topOffset }]}>
+        {/* User header */}
+        <View style={[pd.userRow, { borderBottomColor: c.border }]}>
+          <View style={[pd.avatar, { backgroundColor: c.accentDim }]}>
+            <Ionicons name="person" size={20} color={c.accent} />
+          </View>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={[pd.userName, { color: c.white }]} numberOfLines={1}>{name}</Text>
+            <Text style={[pd.userEmail, { color: c.muted }]} numberOfLines={1}>{email}</Text>
+          </View>
+        </View>
+
+        {/* Macro goals summary */}
+        <View style={[pd.goalsRow, { borderBottomColor: c.border }]}>
+          {[
+            { label: 'Calories', value: goals.calories, unit: 'kcal' },
+            { label: 'Protein',  value: goals.protein,  unit: 'g'    },
+            { label: 'Carbs',    value: goals.carbs,    unit: 'g'    },
+            { label: 'Fat',      value: goals.fat,      unit: 'g'    },
+          ].map((g) => (
+            <View key={g.label} style={pd.goalItem}>
+              <Text style={[pd.goalVal, { color: c.white }]}>{g.value}</Text>
+              <Text style={[pd.goalUnit, { color: c.muted }]}>{g.unit}</Text>
+              <Text style={[pd.goalLabel, { color: c.muted }]}>{g.label}</Text>
+            </View>
+          ))}
+        </View>
+
+        {/* Menu items */}
+        {PROFILE_MENU.map((item, i) => (
+          <TouchableOpacity
+            key={item.label}
+            style={[pd.menuItem, i < PROFILE_MENU.length - 1 && { borderBottomWidth: 1, borderBottomColor: c.border }]}
+            activeOpacity={0.7}
+            onPress={() => { onClose(); onNavigate(item.screen); }}
+          >
+            <Ionicons name={item.icon} size={18} color={c.muted} />
+            <Text style={[pd.menuLabel, { color: c.white }]}>{item.label}</Text>
+            <Ionicons name="chevron-forward" size={14} color={c.muted} />
+          </TouchableOpacity>
+        ))}
+      </View>
+    </Modal>
+  );
+}
+
+const pd = StyleSheet.create({
+  card: {
+    position:      'absolute',
+    right:         16,
+    width:         240,
+    borderRadius:  18,
+    borderWidth:   1,
+    shadowColor:   '#000',
+    shadowOffset:  { width: 0, height: 8 },
+    shadowOpacity: 0.28,
+    shadowRadius:  18,
+    elevation:     20,
+    overflow:      'hidden',
+  },
+  userRow: {
+    flexDirection:    'row',
+    alignItems:       'center',
+    gap:              10,
+    padding:          14,
+    borderBottomWidth: 1,
+  },
+  avatar: {
+    width: 40, height: 40, borderRadius: 20,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  userName:  { fontSize: 14, fontWeight: '700' },
+  userEmail: { fontSize: 12, marginTop: 1 },
+  goalsRow: {
+    flexDirection:    'row',
+    justifyContent:   'space-around',
+    padding:          12,
+    borderBottomWidth: 1,
+  },
+  goalItem:  { alignItems: 'center', gap: 2 },
+  goalVal:   { fontSize: 14, fontWeight: '800' },
+  goalUnit:  { fontSize: 10 },
+  goalLabel: { fontSize: 10 },
+  menuItem: {
+    flexDirection:  'row',
+    alignItems:     'center',
+    gap:            12,
+    paddingHorizontal: 14,
+    paddingVertical:   13,
+  },
+  menuLabel: { flex: 1, fontSize: 14, fontWeight: '600' },
+});
+
 // ─── Screen ───────────────────────────────────────────────────────────────────
 export default function HomeScreen() {
   const navigation = useNavigation();
   const { state }  = useApp();
   const c          = useTheme();
+  const { user }   = useAuth();
 
   // Live in-memory totals from MealContext — updated immediately on add/edit/remove
   const { totals: liveTotals, loggedMeals: liveMeals } = useMealContext();
@@ -315,7 +437,8 @@ export default function HomeScreen() {
   const today = getTodayKey();
   const [selectedDate, setSelectedDate] = useState(today);
   const isToday = selectedDate === today;
-  const [editingMeal, setEditingMeal] = useState(null);
+  const [editingMeal,  setEditingMeal]  = useState(null);
+  const [profileOpen,  setProfileOpen]  = useState(false);
 
   const goBack    = () => setSelectedDate((d) => shiftDate(d, -1));
   const goForward = () => { if (!isToday) setSelectedDate((d) => shiftDate(d, 1)); };
@@ -361,48 +484,57 @@ export default function HomeScreen() {
   // precision=4 so the arc SVG interpolates smoothly (not just 0.1 steps)
   const animArcProg  = useAnimatedValue(calProgress,      500, 4);
 
-  const darkMode       = state.settings?.darkMode !== false;
-  const gradientColors = darkMode
-    ? [c.accent, '#3D2F9E', '#1C1640', c.bg]
-    : [c.accent, '#A090E8', '#D4CEFC', c.bg];
+  const insets = useSafeAreaInsets();
+
+  // Gradient grows from solid cream (0 kcal) → full sage green (goal met).
+  // lerpHex blends each stop from c.bg toward its target green shade.
+  const gradientColors = [
+    lerpHex(c.bg, c.accent,  calProgress),
+    lerpHex(c.bg, '#89B48C', calProgress),
+    lerpHex(c.bg, '#D0E4D1', calProgress),
+    c.bg,
+  ];
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }}>
+    <View style={{ flex: 1, backgroundColor: c.bg }}>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 110 }}>
 
         {/* ══ GRADIENT HERO SECTION ══════════════════════════════════════════ */}
         <LinearGradient
           colors={gradientColors}
           locations={[0, 0.35, 0.65, 1]}
-          style={{ paddingHorizontal: 20, paddingBottom: 40 }}
+          style={{ paddingHorizontal: 20, paddingBottom: 40, paddingTop: insets.top }}
         >
           {/* ── App header row ── */}
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 14, paddingBottom: 16 }}>
+            <Text style={{ fontSize: 22, fontWeight: '700', color: c.white, letterSpacing: 0.2 }}>Shred AI</Text>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <Ionicons name="restaurant-outline" size={24} color="#FFFFFF" />
-              <Text style={{ fontSize: 22, fontWeight: '700', color: '#FFFFFF', letterSpacing: 0.2 }}>FoodChat AI</Text>
-            </View>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(255,255,255,0.18)', borderRadius: 20, paddingHorizontal: 13, paddingVertical: 7 }}>
-              <Ionicons name="flame" size={15} color="#FFD166" />
-              <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 15 }}>{streak}</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: c.card, borderRadius: 20, paddingHorizontal: 13, paddingVertical: 7, borderWidth: 1, borderColor: c.border }}>
+                <Ionicons name="flame" size={15} color={c.fire} />
+                <Text style={{ color: c.white, fontWeight: '700', fontSize: 15 }}>{streak}</Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setProfileOpen(true)}
+                activeOpacity={0.8}
+                style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: c.card, borderWidth: 1, borderColor: c.border, alignItems: 'center', justifyContent: 'center' }}
+              >
+                <Ionicons name="person" size={18} color={c.muted} />
+              </TouchableOpacity>
             </View>
           </View>
 
           {/* ── Date navigation ── */}
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 20, gap: 16 }}>
-            <TouchableOpacity
-              onPress={goBack}
-              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-            >
-              <Ionicons name="chevron-back" size={22} color="rgba(255,255,255,0.9)" />
+            <TouchableOpacity onPress={goBack} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+              <Ionicons name="chevron-back" size={22} color={c.white} />
             </TouchableOpacity>
 
             <View style={{ alignItems: 'center', gap: 2 }}>
-              <Text style={{ fontSize: 15, fontWeight: '800', color: '#FFFFFF', letterSpacing: 0.5, textTransform: 'uppercase' }}>
+              <Text style={{ fontSize: 15, fontWeight: '800', color: c.white, letterSpacing: 0.5, textTransform: 'uppercase' }}>
                 {formatNavDate(selectedDate)}
               </Text>
               {!isToday && (
-                <Text style={{ fontSize: 11, color: 'rgba(255,255,255,0.6)', letterSpacing: 0.3 }}>
+                <Text style={{ fontSize: 11, color: c.muted, letterSpacing: 0.3 }}>
                   {formatSubDate(selectedDate)}
                 </Text>
               )}
@@ -414,51 +546,40 @@ export default function HomeScreen() {
               style={{ opacity: isToday ? 0.3 : 1 }}
               disabled={isToday}
             >
-              <Ionicons name="chevron-forward" size={22} color="rgba(255,255,255,0.9)" />
+              <Ionicons name="chevron-forward" size={22} color={c.white} />
             </TouchableOpacity>
           </View>
 
           {/* ── Calorie ring — centered hero ── */}
-          {(() => {
-            // Light mode needs stronger contrast against the faded lavender gradient
-            const shadow = darkMode ? null : {
-              textShadowColor:  'rgba(40,20,120,0.45)',
-              textShadowOffset: { width: 0, height: 1 },
-              textShadowRadius: 6,
-            };
-            return (
-              <View style={{ alignItems: 'center', marginBottom: 20 }}>
-                <ArcRing
-                  size={214}
-                  strokeWidth={13}
-                  progress={animArcProg}
-                  color="#FFFFFF"
-                  trackColor={darkMode ? 'rgba(255,255,255,0.18)' : 'rgba(60,40,160,0.22)'}
-                >
-                  <View style={{ alignItems: 'center', gap: 2 }}>
-                    <Text style={{ fontSize: 11, fontWeight: '700', color: '#FFFFFF', textTransform: 'uppercase', letterSpacing: 0.8, ...shadow }}>
-                      Remaining
-                    </Text>
-                    <Text style={{ fontSize: 46, fontWeight: '800', color: '#FFFFFF', letterSpacing: -1.5, lineHeight: 52, ...shadow }}>
-                      {Math.round(animCalLeft).toLocaleString()}
-                    </Text>
-                    <Text style={{ fontSize: 12, color: darkMode ? '#FFFFFF99' : '#FFFFFFdd', ...shadow }}>
-                      /{GOALS.calories.toLocaleString()} kcal
-                    </Text>
-                    <Text style={{ fontSize: 11, color: darkMode ? '#FFFFFF66' : '#FFFFFFbb', marginTop: 4, ...shadow }}>
-                      {Math.round(animCalEaten).toLocaleString()} kcal consumed
-                    </Text>
-                  </View>
-                </ArcRing>
+          <View style={{ alignItems: 'center', marginBottom: 20 }}>
+            <ArcRing
+              size={214}
+              strokeWidth={13}
+              progress={animArcProg}
+              color={c.accent}
+              trackColor={c.border}
+            >
+              <View style={{ alignItems: 'center', gap: 2 }}>
+                <Text style={{ fontSize: 11, fontWeight: '700', color: c.muted, textTransform: 'uppercase', letterSpacing: 0.8 }}>
+                  Remaining
+                </Text>
+                <Text style={{ fontSize: 46, fontWeight: '800', color: c.white, letterSpacing: -1.5, lineHeight: 52 }}>
+                  {Math.round(animCalLeft).toLocaleString()}
+                </Text>
+                <Text style={{ fontSize: 12, color: c.muted }}>
+                  /{GOALS.calories.toLocaleString()} kcal
+                </Text>
+                <Text style={{ fontSize: 11, color: c.muted, marginTop: 4 }}>
+                  {Math.round(animCalEaten).toLocaleString()} kcal consumed
+                </Text>
               </View>
-            );
-          })()}
+            </ArcRing>
+          </View>
 
         </LinearGradient>
 
         {/* ══ MACRO BARS CARD — floats over bottom of gradient ══════════════ */}
         <View style={{
-          flexDirection: 'row',
           backgroundColor: c.card,
           borderRadius: 18,
           borderWidth: 1,
@@ -468,15 +589,17 @@ export default function HomeScreen() {
           marginTop: -28,
           shadowColor: '#000',
           shadowOffset: { width: 0, height: 4 },
-          shadowOpacity: darkMode ? 0.30 : 0.10,
+          shadowOpacity: 0.10,
           shadowRadius: 12,
           elevation: 6,
         }}>
-          <MacroBar label="Protein" consumed={dayTotals.protein} goal={GOALS.protein} unit="g" color={c.protein} c={c} />
-          <View style={{ width: 1, backgroundColor: c.border, marginHorizontal: 4 }} />
-          <MacroBar label="Carbs"   consumed={dayTotals.carbs}   goal={GOALS.carbs}   unit="g" color={c.carbs}   c={c} />
-          <View style={{ width: 1, backgroundColor: c.border, marginHorizontal: 4 }} />
-          <MacroBar label="Fat"     consumed={dayTotals.fat}     goal={GOALS.fat}     unit="g" color={c.fat}     c={c} />
+          <View style={{ flexDirection: 'row' }}>
+            <MacroBar label="Protein" consumed={dayTotals.protein} goal={GOALS.protein} unit="g" color={c.protein} c={c} />
+            <View style={{ width: 1, backgroundColor: c.border, marginHorizontal: 4 }} />
+            <MacroBar label="Carbs"   consumed={dayTotals.carbs}   goal={GOALS.carbs}   unit="g" color={c.carbs}   c={c} />
+            <View style={{ width: 1, backgroundColor: c.border, marginHorizontal: 4 }} />
+            <MacroBar label="Fat"     consumed={dayTotals.fat}     goal={GOALS.fat}     unit="g" color={c.fat}     c={c} />
+          </View>
         </View>
 
         {/* ══ CONTENT BELOW GRADIENT ═════════════════════════════════════════ */}
@@ -512,6 +635,17 @@ export default function HomeScreen() {
         onClose={() => setEditingMeal(null)}
       />
 
-    </SafeAreaView>
+      <ProfileDropdown
+        visible={profileOpen}
+        onClose={() => setProfileOpen(false)}
+        onNavigate={(screen) => navigation.navigate(screen)}
+        user={user}
+        profile={p}
+        goals={GOALS}
+        c={c}
+        topOffset={insets.top + 62}
+      />
+
+    </View>
   );
 }

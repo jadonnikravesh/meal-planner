@@ -75,7 +75,7 @@ async function scheduleAt(hour, minute, title, body, identifier) {
 }
 
 /**
- * Cancel all previously scheduled FoodChat AI notifications and reschedule fresh
+ * Cancel all previously scheduled Shred AI notifications and reschedule fresh
  * ones based on the current daily data snapshot and user settings.
  *
  * @param {object} data      Shape: { mealsLogged, calories, calorieTarget, protein, proteinTarget }
@@ -101,7 +101,7 @@ export async function scheduleDailyNotifications(data, settings = {}) {
       const id = await scheduleAt(
         time.hour,
         time.minute,
-        'FoodChat AI',
+        'Shred AI',
         result.message,
         `fitai_${slotName}`,
       );
@@ -132,7 +132,7 @@ export async function scheduleWeeklyWeightNotification() {
     await Notifications.scheduleNotificationAsync({
       identifier: 'fitai_weekly_weight',
       content: {
-        title: 'FoodChat AI',
+        title: 'Shred AI',
         body:  'Your weekly weight estimate is ready 📊 Tap to review your progress.',
         sound: true,
       },

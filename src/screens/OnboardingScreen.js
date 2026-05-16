@@ -231,11 +231,11 @@ export default function OnboardingScreen({ onComplete } = {}) {
                     <Ionicons name="sparkles" size={16} color="#FFF" />
                   </View>
                   <Text style={{ fontSize: 11, fontWeight: '800', color: c.accent, textTransform: 'uppercase', letterSpacing: 1.2 }}>
-                    Why FoodChat AI
+                    Why Shred AI
                   </Text>
                 </View>
                 <Text style={{ fontSize: 15, color: c.white, lineHeight: 24 }}>
-                  FoodChat AI handles the thinking for you. Just tell it what you eat using the voice chat. No typing or photos. Get real-time guidance tailored to your goals.
+                  Shred AI handles the thinking for you. Just tell it what you eat using the voice chat. No typing or photos. Get real-time guidance tailored to your goals.
                 </Text>
               </View>
 

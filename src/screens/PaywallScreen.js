@@ -1,29 +1,26 @@
 import React, { useState, useRef, useMemo, useEffect } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, StyleSheet,
+  View, Text, TouchableOpacity, StyleSheet,
   ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme, useApp } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
-import { DEV_MODE, isReviewAccount } from '../config/testMode';
+import { isDevEnabled, isReviewAccount } from '../config/testMode';
+import TermsOfServiceScreen from './TermsOfServiceScreen';
+import PrivacyPolicyScreen  from './PrivacyPolicyScreen';
 
 import { API_BASE_URL } from '../config/api';
 
 const BACKEND_URL = API_BASE_URL;
 
-// Set true to skip IAP entirely and test the UI with mock state
 const MOCK_MODE = false;
 
-// Apple product IDs — must match exactly what you create in App Store Connect
-// App Store Connect → your app → Subscriptions → create these two products:
-//   com.foodchatai.monthly  (1 month, auto-renewable, $4.99, 14-day intro offer)
-//   com.foodchatai.yearly   (1 year,  auto-renewable, $34.99, 14-day intro offer)
+const FORCE_REAL_IAP = process.env.EXPO_PUBLIC_FORCE_IAP === 'true';
 
 const PRODUCT_IDS = ['com.foodchatai.monthly', 'com.foodchatai.yearly'];
 
-// Fallback prices shown while store loads or when IAP is unavailable
 const MOCK_PRODUCTS = {
   'com.foodchatai.monthly': {
     price: '$4.99', period: 'per month',
@@ -46,11 +43,6 @@ const FEATURES = [
   { icon: 'trending-up', text: 'Weekly progress check-ins'  },
   { icon: 'mic-outline', text: 'Voice & photo meal logging'  },
 ];
-
-// Client-side authoritative — backend records usage only
-const PROMO_CODES = {
-  Squidward22: { plan: 'lifetime_free', label: 'Lifetime Free Access' },
-};
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 const makeStyles = (c) => StyleSheet.create({
@@ -87,7 +79,6 @@ const makeStyles = (c) => StyleSheet.create({
   planCard:       { flex: 1, borderRadius: 18, borderWidth: 2, padding: 16, position: 'relative', overflow: 'hidden' },
   planUnselected: { borderColor: c.border, backgroundColor: c.card },
   planSelected:   { borderColor: c.accent, backgroundColor: c.accentDim },
-  planLifetime:   { borderColor: c.green,  backgroundColor: c.greenDim  },
 
   planBadgeWrap:   { backgroundColor: c.green,  borderRadius: 8, alignSelf: 'flex-start', paddingHorizontal: 8, paddingVertical: 3, marginBottom: 8 },
   planBadgeAccent: { backgroundColor: c.accent, borderRadius: 8, alignSelf: 'flex-start', paddingHorizontal: 8, paddingVertical: 3, marginBottom: 8 },
@@ -96,7 +87,6 @@ const makeStyles = (c) => StyleSheet.create({
 
   planPriceFull: { fontSize: 12, color: c.muted, textDecorationLine: 'line-through', marginBottom: 2 },
   planPrice:     { fontSize: 28, fontWeight: '800', color: c.white, lineHeight: 32 },
-  planPriceFree: { fontSize: 28, fontWeight: '800', color: c.green, lineHeight: 32 },
   planPeriod:    { fontSize: 11, color: c.muted, fontWeight: '500', marginBottom: 10 },
   planLabel:     { fontSize: 13, fontWeight: '700', color: c.white },
 
@@ -106,45 +96,6 @@ const makeStyles = (c) => StyleSheet.create({
     backgroundColor: c.accent,
     justifyContent: 'center', alignItems: 'center',
   },
-  planCheckGreen: {
-    position: 'absolute', top: 10, right: 10,
-    width: 22, height: 22, borderRadius: 11,
-    backgroundColor: c.green,
-    justifyContent: 'center', alignItems: 'center',
-  },
-
-  promoRow: { flexDirection: 'row', gap: 10, alignItems: 'center', marginBottom: 6 },
-  promoInputWrap: {
-    flex: 1,
-    backgroundColor: c.inputBg, borderRadius: 12,
-    borderWidth: 1, borderColor: c.border,
-    flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: 14,
-  },
-  promoInputFocused: { borderColor: c.accent },
-  promoInputValid:   { borderColor: c.green  },
-  promoTextInput: { flex: 1, fontSize: 15, color: c.white, paddingVertical: 13 },
-  promoIcon: { marginRight: 8 },
-  promoApplyBtn: {
-    backgroundColor: c.accent, borderRadius: 12,
-    paddingHorizontal: 18, paddingVertical: 13,
-    alignItems: 'center', justifyContent: 'center', minWidth: 76,
-  },
-  promoApplyBtnGreen:    { backgroundColor: c.green },
-  promoApplyBtnDisabled: { opacity: 0.38 },
-  promoApplyText: { fontSize: 14, fontWeight: '700', color: '#FFF' },
-
-  promoValidHint: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 18 },
-  promoValidText: { fontSize: 12, fontWeight: '600', color: c.green },
-  promoError:     { fontSize: 12, color: c.red, marginBottom: 16 },
-
-  noPayNote: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    backgroundColor: c.greenDim, borderRadius: 14,
-    borderWidth: 1, borderColor: c.green + '44',
-    padding: 14, marginBottom: 20,
-  },
-  noPayText: { fontSize: 14, color: c.green, fontWeight: '600', flex: 1 },
 
   sectionLabel: {
     fontSize: 12, fontWeight: '700', color: c.muted,
@@ -165,10 +116,6 @@ const makeStyles = (c) => StyleSheet.create({
     shadowColor: c.accent, shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.40, shadowRadius: 14, elevation: 8,
   },
-  ctaBtnGreen: {
-    backgroundColor: c.green,
-    shadowColor: c.green,
-  },
   ctaBtnDisabled: { opacity: 0.45, shadowOpacity: 0 },
   ctaBtnText:     { fontSize: 16, fontWeight: '800', color: '#FFF', letterSpacing: 0.3 },
 
@@ -178,7 +125,6 @@ const makeStyles = (c) => StyleSheet.create({
   },
   restoreBtnText: { fontSize: 13, color: c.muted, textDecorationLine: 'underline' },
 
-  // ── Review mode only — remove before shipping ──────────────────────────────
   reviewBtn: {
     borderWidth: 1.5, borderColor: '#F59E0B', borderRadius: 14,
     borderStyle: 'dashed', paddingVertical: 14,
@@ -203,9 +149,7 @@ export default function PaywallScreen() {
   const { dispatch } = useApp();
   const { user }     = useAuth();
 
-  // Runtime flag: true for the test account (Apple reviewer) and in DEV.
-  // Used to bypass real IAP and show developer UI — never true for real users.
-  const isTestAccount = MOCK_MODE || DEV_MODE || isReviewAccount(user);
+  const isTestAccount = MOCK_MODE || (!FORCE_REAL_IAP && isDevEnabled(user)) || isReviewAccount(user);
 
   const [selectedId,    setSelectedId]    = useState('com.foodchatai.yearly');
   const [storeReady,    setStoreReady]    = useState(isTestAccount);
@@ -213,16 +157,14 @@ export default function PaywallScreen() {
   const [loading,      setLoading]      = useState(false);
   const [restoring,    setRestoring]    = useState(false);
   const [error,        setError]        = useState('');
+  const [showTerms,    setShowTerms]    = useState(false);
+  const [showPrivacy,  setShowPrivacy]  = useState(false);
 
-  const [promoCode,    setPromoCode]    = useState('');
-  const [promoLoading, setPromoLoading] = useState(false);
-  const [promoError,   setPromoError]   = useState('');
-  const [focusedPromo, setFocusedPromo] = useState(false);
+  const connectedRef      = useRef(false);
+  const IAPRef            = useRef(null);
+  const purchaseTimeoutRef = useRef(null);
 
-  const connectedRef = useRef(false);
-  const IAPRef       = useRef(null); // dynamically imported on native only
-
-  // ── App Store connection (native only — skipped on web and in TEST/MOCK mode) ─
+  // ── App Store connection ───────────────────────────────────────────────────
   useEffect(() => {
     if (isTestAccount || Platform.OS === 'web') return;
 
@@ -232,18 +174,21 @@ export default function PaywallScreen() {
       const IAP = await import('expo-in-app-purchases');
       IAPRef.current = IAP;
 
-      // Register the purchase listener BEFORE connecting so no events are missed
-      IAP.setPurchaseListener(({ responseCode, results }) => {
+      IAP.setPurchaseListener(({ responseCode, results, errorCode }) => {
+        console.log('[IAP] Purchase listener fired — responseCode:', responseCode, 'results:', results?.length ?? 0);
+        clearTimeout(purchaseTimeoutRef.current);
         const RC = IAP.IAPResponseCode;
 
         if (responseCode === RC.OK && results?.length) {
           results.forEach(async (purchase) => {
-            // Finish the transaction — false = do NOT consume (correct for subscriptions)
+            const txId = purchase.orderId ?? purchase.transactionId ?? null;
+            console.log('[IAP] Purchase OK:', purchase.productId, 'txId:', txId);
             try {
               if (!purchase.acknowledged) {
                 await IAP.finishTransactionAsync(purchase, false);
+                console.log('[IAP] Transaction finished:', txId);
               }
-            } catch { /* non-fatal — Apple will retry on next launch */ }
+            } catch (e) { console.warn('[IAP] finishTransactionAsync error:', e?.message); }
 
             const planKey = PLAN_META[purchase.productId]?.key ?? 'monthly';
             dispatch({
@@ -251,8 +196,7 @@ export default function PaywallScreen() {
               payload: {
                 status:           'active',
                 plan:             planKey,
-                subscriptionId:   purchase.transactionId   ?? null,
-                // transactionReceipt is the raw StoreKit receipt for backend validation
+                subscriptionId:   txId,
                 transactionReceipt: purchase.transactionReceipt ?? null,
                 customerId:       null,
                 trialEnd:         null,
@@ -262,16 +206,18 @@ export default function PaywallScreen() {
           });
 
         } else if (responseCode === RC.DEFERRED) {
-          // Ask to Buy — purchase is pending parental approval; not an error
+          console.log('[IAP] Purchase deferred (Ask to Buy)');
           if (mounted) {
             setError("Your purchase is awaiting approval. You'll be notified when it's approved.");
             setLoading(false);
           }
 
         } else if (responseCode === RC.USER_CANCELED) {
+          console.log('[IAP] Purchase cancelled by user');
           if (mounted) setLoading(false);
 
         } else {
+          console.warn('[IAP] Purchase failed — responseCode:', responseCode, 'errorCode:', errorCode);
           if (mounted) {
             setError('Purchase failed. Please try again.');
             setLoading(false);
@@ -280,17 +226,39 @@ export default function PaywallScreen() {
       });
 
       try {
+        console.log('[IAP] Connecting to App Store...');
         await IAP.connectAsync();
         connectedRef.current = true;
-
-        const { responseCode, results } = await IAP.getProductsAsync(PRODUCT_IDS);
-        if (mounted && responseCode === IAP.IAPResponseCode.OK && results?.length) {
-          const map = {};
-          results.forEach((p) => { map[p.productId] = p; });
-          setStoreProducts(map);
+        console.log('[IAP] Connected');
+      } catch (connectErr) {
+        if (connectErr?.message?.includes('Already connected')) {
+          console.log('[IAP] Already connected — reusing existing session');
+          connectedRef.current = true;
+        } else {
+          console.warn('[IAP] connectAsync failed:', connectErr?.message ?? connectErr);
+          if (mounted) setStoreReady(true);
+          return;
         }
-      } catch {
-        // Store unavailable — mock prices will be shown, purchase will surface an error
+      }
+
+      try {
+        console.log('[IAP] Fetching products:', PRODUCT_IDS);
+        const { responseCode, results } = await IAP.getProductsAsync(PRODUCT_IDS);
+        console.log('[IAP] getProductsAsync responseCode:', responseCode, '— products returned:', results?.length ?? 0);
+        if (mounted) {
+          if (responseCode === IAP.IAPResponseCode.OK && results?.length) {
+            const map = {};
+            results.forEach((p) => {
+              map[p.productId] = p;
+              console.log('[IAP] Product loaded:', p.productId, p.price);
+            });
+            setStoreProducts(map);
+          } else {
+            console.warn('[IAP] No products returned — verify these IDs exist in App Store Connect:', PRODUCT_IDS);
+          }
+        }
+      } catch (fetchErr) {
+        console.warn('[IAP] getProductsAsync failed:', fetchErr?.message ?? fetchErr);
       } finally {
         if (mounted) setStoreReady(true);
       }
@@ -300,6 +268,7 @@ export default function PaywallScreen() {
 
     return () => {
       mounted = false;
+      clearTimeout(purchaseTimeoutRef.current);
       if (connectedRef.current && IAPRef.current) {
         IAPRef.current.disconnectAsync().catch(() => {});
         connectedRef.current = false;
@@ -307,19 +276,13 @@ export default function PaywallScreen() {
     };
   }, []);
 
-  // ── Derived display values ────────────────────────────────────────────────
-  const previewPromo   = PROMO_CODES[promoCode.trim()] ?? null;
-  const isLifetimeFree = previewPromo?.plan === 'lifetime_free';
-
   const getDisplayPrice = (productId) => {
     const store = storeProducts[productId];
     if (store?.price) return store.price;
     return MOCK_PRODUCTS[productId].price;
   };
 
-  const selectedMock = MOCK_PRODUCTS[selectedId];
-
-  // ── Review mode: bypass purchase entirely ────────────────────────────────
+  // ── Review mode: bypass purchase entirely ─────────────────────────────────
   const handleUnlockForTesting = () => {
     const planKey = PLAN_META[selectedId]?.key ?? 'monthly';
     dispatch({
@@ -332,7 +295,6 @@ export default function PaywallScreen() {
   const handleSubscribe = async () => {
     setError('');
 
-    // Non-production paths — bypass real IAP
     if (isTestAccount || Platform.OS === 'web') {
       const planKey = PLAN_META[selectedId]?.key ?? 'monthly';
       dispatch({
@@ -342,16 +304,55 @@ export default function PaywallScreen() {
       return;
     }
 
-    if (!storeReady || !IAPRef.current) {
+    const IAP = IAPRef.current;
+    if (!IAP) {
       setError('Still connecting to App Store. Please wait a moment.');
       return;
     }
 
+    // If the connection was lost (e.g. app backgrounded), attempt to reconnect
+    // before blocking the purchase — previously we hard-returned here which
+    // meant Apple's reviewers never saw the IAP sheet.
+    if (!connectedRef.current) {
+      console.log('[IAP] Not connected — attempting reconnect before purchase');
+      try {
+        await IAP.connectAsync();
+        connectedRef.current = true;
+        console.log('[IAP] Reconnected successfully');
+      } catch (reconnectErr) {
+        if (reconnectErr?.message?.includes('Already connected')) {
+          connectedRef.current = true;
+        } else {
+          console.warn('[IAP] Reconnect failed:', reconnectErr?.message ?? reconnectErr);
+          setError('App Store connection lost. Please close and reopen the app.');
+          return;
+        }
+      }
+    }
+
+    if (!storeProducts[selectedId]) {
+      console.warn('[IAP] Product not in storeProducts cache:', selectedId);
+      setError('Could not load this product from the App Store. Please close and reopen the app.');
+      return;
+    }
+
+    console.log('[IAP] Purchasing:', selectedId, storeProducts[selectedId]?.price);
     setLoading(true);
+
+    // Safety net: if the purchase sheet never appears or the listener never fires,
+    // reset after 45 seconds so the user isn't stuck on a spinning button forever.
+    purchaseTimeoutRef.current = setTimeout(() => {
+      setLoading(false);
+      setError('The App Store is taking too long to respond. Please try again.');
+    }, 45000);
+
     try {
-      // Triggers the native StoreKit sheet — result arrives via setPurchaseListener
-      await IAPRef.current.purchaseItemAsync(selectedId);
-    } catch {
+      console.log('[IAP] Calling purchaseItemAsync:', selectedId);
+      await IAP.purchaseItemAsync(selectedId);
+      console.log('[IAP] purchaseItemAsync resolved — waiting for purchase listener');
+    } catch (e) {
+      clearTimeout(purchaseTimeoutRef.current);
+      console.warn('[IAP] purchaseItemAsync error:', e?.message ?? e);
       setError('Could not connect to the App Store. Please try again.');
       setLoading(false);
     }
@@ -369,7 +370,6 @@ export default function PaywallScreen() {
       const IAP = IAPRef.current;
       const { responseCode, results } = await IAP.getPurchaseHistoryAsync();
       if (responseCode === IAP.IAPResponseCode.OK && results?.length) {
-        // Use the most recent subscription purchase
         const sub = results
           .filter((p) => PRODUCT_IDS.includes(p.productId))
           .sort((a, b) => (b.transactionDate ?? 0) - (a.transactionDate ?? 0))[0];
@@ -381,14 +381,14 @@ export default function PaywallScreen() {
             payload: {
               status:             'active',
               plan:               planKey,
-              subscriptionId:     sub.transactionId        ?? null,
+              subscriptionId:     sub.orderId ?? sub.transactionId ?? null,
               transactionReceipt: sub.transactionReceipt   ?? null,
               customerId:         null,
               trialEnd:           null,
             },
           });
         } else {
-          setError('No FoodChat AI subscription found on this Apple ID.');
+          setError('No Shred AI subscription found on this Apple ID.');
         }
       } else {
         setError('No previous purchases found.');
@@ -398,37 +398,6 @@ export default function PaywallScreen() {
     } finally {
       setRestoring(false);
     }
-  };
-
-  // ── Apply promo code ──────────────────────────────────────────────────────
-  const handlePromoApply = async () => {
-    const trimmed = promoCode.trim();
-    if (!trimmed) return;
-    setPromoError('');
-
-    const code = PROMO_CODES[trimmed];
-    if (!code) { setPromoError('Invalid code'); return; }
-
-    setPromoLoading(true);
-
-    fetch(`${BACKEND_URL}/promo/redeem`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code: trimmed, userId: user?.uid, email: user?.email }),
-    }).catch(() => {});
-
-    dispatch({
-      type: 'SET_SUBSCRIPTION',
-      payload: {
-        status:         'lifetime_free',
-        plan:           'lifetime_free',
-        subscriptionId: null,
-        customerId:     null,
-        trialEnd:       null,
-      },
-    });
-
-    setPromoLoading(false);
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -448,10 +417,10 @@ export default function PaywallScreen() {
           <View style={s.iconWrap}>
             <Ionicons name="sparkles" size={30} color={c.accent} />
           </View>
-          <Text style={s.title}>Try FoodChat AI Free</Text>
+          <Text style={s.title}>Try Shred AI Free</Text>
           <Text style={s.subtitle}>Full access, no restrictions</Text>
 
-          {/* ── 14-day trial badge ── */}
+          {/* ── Trial badge ── */}
           <View style={s.trialBadge}>
             <Ionicons name="gift-outline" size={15} color={c.green} />
             <Text style={s.trialBadgeText}>14-day free trial — no charge today</Text>
@@ -472,34 +441,25 @@ export default function PaywallScreen() {
               const mock = MOCK_PRODUCTS[productId];
               const sel  = selectedId === productId;
 
-              const cardStyle = isLifetimeFree
-                ? s.planLifetime
-                : sel ? s.planSelected : s.planUnselected;
-
-              const displayBadge  = isLifetimeFree ? 'LIFETIME' : mock.badge;
-              const displayFull   = isLifetimeFree ? getDisplayPrice(productId) : mock.priceFull;
-              const displayPrice  = isLifetimeFree ? 'FREE' : getDisplayPrice(productId);
-              const displayPeriod = isLifetimeFree ? 'forever' : mock.period;
-
               return (
                 <TouchableOpacity
                   key={productId}
-                  style={[s.planCard, cardStyle]}
+                  style={[s.planCard, sel ? s.planSelected : s.planUnselected]}
                   onPress={() => { setSelectedId(productId); setError(''); }}
                   activeOpacity={0.82}
                 >
-                  {displayBadge
-                    ? <View style={isLifetimeFree ? s.planBadgeWrap : (mock.badge ? s.planBadgeWrap : s.planBadgeAccent)}>
-                        <Text style={s.planBadgeText}>{displayBadge}</Text>
+                  {mock.badge
+                    ? <View style={s.planBadgeWrap}>
+                        <Text style={s.planBadgeText}>{mock.badge}</Text>
                       </View>
                     : <View style={s.planBadgeSpacer} />
                   }
-                  <Text style={s.planPriceFull}>{displayFull}</Text>
-                  <Text style={isLifetimeFree ? s.planPriceFree : s.planPrice}>{displayPrice}</Text>
-                  <Text style={s.planPeriod}>{displayPeriod}</Text>
+                  <Text style={s.planPriceFull}>{mock.priceFull}</Text>
+                  <Text style={s.planPrice}>{getDisplayPrice(productId)}</Text>
+                  <Text style={s.planPeriod}>{mock.period}</Text>
                   <Text style={s.planLabel}>{meta.label}</Text>
-                  {(sel || isLifetimeFree) && (
-                    <View style={isLifetimeFree ? s.planCheckGreen : s.planCheck}>
+                  {sel && (
+                    <View style={s.planCheck}>
                       <Ionicons name="checkmark" size={13} color="#FFF" />
                     </View>
                   )}
@@ -507,58 +467,6 @@ export default function PaywallScreen() {
               );
             })}
           </View>
-
-          {/* ── Promo code ── */}
-          <View style={s.promoRow}>
-            <View style={[
-              s.promoInputWrap,
-              focusedPromo && s.promoInputFocused,
-              isLifetimeFree && s.promoInputValid,
-            ]}>
-              <Ionicons
-                name={isLifetimeFree ? 'checkmark-circle' : 'pricetag-outline'}
-                size={16}
-                color={isLifetimeFree ? c.green : c.muted}
-                style={s.promoIcon}
-              />
-              <TextInput
-                style={s.promoTextInput}
-                value={promoCode}
-                onChangeText={(t) => { setPromoCode(t); setPromoError(''); }}
-                placeholder="Enter discount code"
-                placeholderTextColor={c.muted}
-                autoCapitalize="none"
-                autoCorrect={false}
-                returnKeyType="done"
-                onFocus={() => setFocusedPromo(true)}
-                onBlur={() => setFocusedPromo(false)}
-                onSubmitEditing={handlePromoApply}
-              />
-            </View>
-            <TouchableOpacity
-              style={[
-                s.promoApplyBtn,
-                isLifetimeFree && s.promoApplyBtnGreen,
-                (!promoCode.trim() || promoLoading) && s.promoApplyBtnDisabled,
-              ]}
-              onPress={handlePromoApply}
-              activeOpacity={0.8}
-              disabled={!promoCode.trim() || promoLoading}
-            >
-              {promoLoading
-                ? <ActivityIndicator size="small" color="#FFF" />
-                : <Text style={s.promoApplyText}>{isLifetimeFree ? 'Unlock' : 'Apply'}</Text>
-              }
-            </TouchableOpacity>
-          </View>
-
-          {isLifetimeFree && !promoError && (
-            <View style={s.promoValidHint}>
-              <Ionicons name="checkmark-circle" size={14} color={c.green} />
-              <Text style={s.promoValidText}>Lifetime free access unlocked — no payment needed</Text>
-            </View>
-          )}
-          {promoError ? <Text style={s.promoError}>{promoError}</Text> : null}
 
           {/* ── Features ── */}
           <Text style={s.sectionLabel}>What's included</Text>
@@ -573,53 +481,27 @@ export default function PaywallScreen() {
 
           <View style={s.divider} />
 
-          {/* ── No-payment note when lifetime promo active ── */}
-          {isLifetimeFree && (
-            <View style={s.noPayNote}>
-              <Ionicons name="shield-checkmark" size={20} color={c.green} />
-              <Text style={s.noPayText}>No payment required — your code grants lifetime access.</Text>
-            </View>
-          )}
-
           {error ? <Text style={s.error}>{error}</Text> : null}
 
           {/* ── CTA ── */}
-          {isLifetimeFree ? (
-            <TouchableOpacity
-              style={[s.ctaBtn, s.ctaBtnGreen, promoLoading && s.ctaBtnDisabled]}
-              onPress={handlePromoApply}
-              activeOpacity={0.85}
-              disabled={promoLoading}
-            >
-              {promoLoading ? (
-                <ActivityIndicator color="#FFF" />
-              ) : (
-                <>
-                  <Ionicons name="infinite" size={18} color="#FFF" />
-                  <Text style={s.ctaBtnText}>Unlock Lifetime Access</Text>
-                </>
-              )}
-            </TouchableOpacity>
-          ) : (
-            <TouchableOpacity
-              style={[s.ctaBtn, (loading || !storeReady) && s.ctaBtnDisabled]}
-              onPress={handleSubscribe}
-              activeOpacity={0.85}
-              disabled={loading || (!storeReady && !isTestAccount)}
-            >
-              {loading ? (
-                <ActivityIndicator color="#FFF" />
-              ) : (
-                <>
-                  <Ionicons name="lock-closed" size={16} color="#FFF" />
-                  <Text style={s.ctaBtnText}>Start 14-Day Free Trial</Text>
-                </>
-              )}
-            </TouchableOpacity>
-          )}
+          <TouchableOpacity
+            style={[s.ctaBtn, (loading || !storeReady) && s.ctaBtnDisabled]}
+            onPress={handleSubscribe}
+            activeOpacity={0.85}
+            disabled={loading || (!storeReady && !isTestAccount)}
+          >
+            {loading ? (
+              <ActivityIndicator color="#FFF" />
+            ) : (
+              <>
+                <Ionicons name="lock-closed" size={16} color="#FFF" />
+                <Text style={s.ctaBtnText}>Start 14-Day Free Trial</Text>
+              </>
+            )}
+          </TouchableOpacity>
 
           {/* ── Test mode unlock button (DEV or review account only) ── */}
-          {(DEV_MODE || isReviewAccount(user)) && !isLifetimeFree && (
+          {(isDevEnabled(user) || isReviewAccount(user)) && (
             <>
               <Text style={s.reviewLabel}>Test Mode — not visible in production</Text>
               <TouchableOpacity
@@ -634,44 +516,36 @@ export default function PaywallScreen() {
           )}
 
           {/* ── Restore purchases ── */}
-          {!isLifetimeFree && (
-            <TouchableOpacity
-              style={s.restoreBtn}
-              onPress={handleRestore}
-              activeOpacity={0.7}
-              disabled={restoring}
-            >
-              {restoring
-                ? <ActivityIndicator size="small" color={c.muted} />
-                : <Text style={s.restoreBtnText}>Restore Purchases</Text>
-              }
-            </TouchableOpacity>
-          )}
+          <TouchableOpacity
+            style={s.restoreBtn}
+            onPress={handleRestore}
+            activeOpacity={0.7}
+            disabled={restoring}
+          >
+            {restoring
+              ? <ActivityIndicator size="small" color={c.muted} />
+              : <Text style={s.restoreBtnText}>Restore Purchases</Text>
+            }
+          </TouchableOpacity>
 
           {/* ── Legal ── */}
-          {isLifetimeFree ? (
-            <Text style={s.legal}>
-              By continuing you agree to our{' '}
-              <Text style={s.legalAccent}>Terms of Service</Text>
-              {' '}and <Text style={s.legalAccent}>Privacy Policy</Text>.
+          <Text style={s.legal}>
+            After your free trial, you'll be automatically charged{' '}
+            <Text style={{ color: c.white, fontWeight: '600' }}>
+              {getDisplayPrice(selectedId)}/{MOCK_PRODUCTS[selectedId].period.replace('per ', '')}
             </Text>
-          ) : (
-            <>
-              <Text style={s.legal}>
-                After your free trial, you'll be automatically charged{' '}
-                <Text style={{ color: c.white, fontWeight: '600' }}>
-                  {getDisplayPrice(selectedId)}/{MOCK_PRODUCTS[selectedId].period.replace('per ', '')}
-                </Text>
-                {' '}through your Apple ID. Cancel any time before the trial ends.
-              </Text>
-              <Text style={s.legal}>
-                By continuing you agree to our{' '}
-                <Text style={s.legalAccent}>Terms of Service</Text>
-                {' '}and <Text style={s.legalAccent}>Privacy Policy</Text>.
-                {' '}Subscriptions auto-renew unless canceled 24 hours before the renewal date.
-              </Text>
-            </>
-          )}
+            {' '}through your Apple ID. Cancel any time before the trial ends.
+          </Text>
+          <Text style={s.legal}>
+            {'By continuing you agree to our '}
+            <Text style={s.legalAccent} onPress={() => setShowTerms(true)}>Terms of Service</Text>
+            {' and '}
+            <Text style={s.legalAccent} onPress={() => setShowPrivacy(true)}>Privacy Policy</Text>
+            {'. Subscriptions auto-renew unless canceled 24 hours before the renewal date.'}
+          </Text>
+
+          <TermsOfServiceScreen visible={showTerms}   onClose={() => setShowTerms(false)}   />
+          <PrivacyPolicyScreen  visible={showPrivacy} onClose={() => setShowPrivacy(false)} />
 
         </ScrollView>
       </KeyboardAvoidingView>
