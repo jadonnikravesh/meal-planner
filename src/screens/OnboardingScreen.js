@@ -57,7 +57,7 @@ const ACTIVITIES = [
   { key: 'veryActive', label: 'Very Active',        desc: '5+ intense workouts per week',       icon: 'barbell-outline' },
 ];
 
-const STEPS = 11;
+const STEPS = 12;
 
 const SPEEDS = [
   {
@@ -201,6 +201,18 @@ export default function OnboardingScreen({ onComplete, onGoBack, initialStep = 0
   const transFade        = useRef(new Animated.Value(0)).current;
   const transButtonFade  = useRef(new Animated.Value(0)).current;
 
+  // Plan transition page animation values (step 9)
+  const planScale      = useRef(new Animated.Value(0)).current;
+  const planIconFade   = useRef(new Animated.Value(0)).current;
+  const planRing1Op    = useRef(new Animated.Value(0)).current;
+  const planRing2Op    = useRef(new Animated.Value(0)).current;
+  const planRing3Op    = useRef(new Animated.Value(0)).current;
+  const planRing1Scale = useRef(new Animated.Value(1)).current;
+  const planRing2Scale = useRef(new Animated.Value(1)).current;
+  const planRing3Scale = useRef(new Animated.Value(1)).current;
+  const planFade       = useRef(new Animated.Value(0)).current;
+  const planButtonFade = useRef(new Animated.Value(0)).current;
+
   // Calorie reveal page (step 10)
   const sliderAnim   = useRef(new Animated.Value(0)).current;
   const calLabelFade = useRef(new Animated.Value(0)).current;
@@ -283,9 +295,9 @@ export default function OnboardingScreen({ onComplete, onGoBack, initialStep = 0
     if (step > 0) slideTo(step - 1, -1);
   };
 
-  // Auto-focus name input on step 10
+  // Auto-focus name input on step 11
   useEffect(() => {
-    if (step === 10) {
+    if (step === 11) {
       const t = setTimeout(() => nameInputRef.current?.focus(), 320);
       return () => clearTimeout(t);
     }
@@ -334,9 +346,49 @@ export default function OnboardingScreen({ onComplete, onGoBack, initialStep = 0
     return () => clearTimeout(t0);
   }, [step]);
 
-  // Check animation page (step 9)
+  // Plan transition page animation (step 9)
   useEffect(() => {
     if (step !== 9) return;
+    planScale.setValue(0);
+    planIconFade.setValue(0);
+    planFade.setValue(0);
+    planButtonFade.setValue(0);
+    [planRing1Op, planRing2Op, planRing3Op].forEach(r => r.setValue(0));
+    [planRing1Scale, planRing2Scale, planRing3Scale].forEach(r => r.setValue(1));
+
+    const startRing = (opAnim, scaleAnim, delay) => {
+      setTimeout(() => {
+        Animated.timing(opAnim, { toValue: 0.18, duration: 220, useNativeDriver: false }).start();
+        Animated.loop(
+          Animated.sequence([
+            Animated.timing(scaleAnim, { toValue: 1.05, duration: 1800, useNativeDriver: false }),
+            Animated.timing(scaleAnim, { toValue: 0.97, duration: 1800, useNativeDriver: false }),
+          ])
+        ).start();
+      }, delay);
+    };
+
+    const t0 = setTimeout(() => {
+      Animated.parallel([
+        Animated.spring(planScale, { toValue: 1, tension: 28, friction: 8, useNativeDriver: false }),
+        Animated.timing(planIconFade, { toValue: 1, duration: 400, useNativeDriver: false }),
+      ]).start(() => {
+        startRing(planRing3Op, planRing3Scale, 0);
+        startRing(planRing2Op, planRing2Scale, 80);
+        startRing(planRing1Op, planRing1Scale, 160);
+        setTimeout(() => {
+          Animated.timing(planFade, { toValue: 1, duration: 350, useNativeDriver: false }).start(() => {
+            Animated.timing(planButtonFade, { toValue: 1, duration: 350, useNativeDriver: false }).start();
+          });
+        }, 1200);
+      });
+    }, 150);
+    return () => clearTimeout(t0);
+  }, [step]);
+
+  // Check animation page (step 10)
+  useEffect(() => {
+    if (step !== 10) return;
     // Reset check animation
     chkArcDash.setValue(1);
     chkMarkFade.setValue(0);
@@ -421,7 +473,56 @@ export default function OnboardingScreen({ onComplete, onGoBack, initialStep = 0
     switch (step) {
 
       // Step 9 — Check animation → calorie reveal (single page)
+      // Step 9 — Plan transition
       case 9: {
+        const PLAN = c.accent;
+        const planRingStyle = (opAnim, scaleAnim, size) => ({
+          position: 'absolute',
+          width: size, height: size, borderRadius: size / 2,
+          backgroundColor: PLAN,
+          opacity: opAnim,
+          transform: [{ scale: scaleAnim }],
+        });
+        return (
+          <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', gap: 44 }}>
+            <View style={{ alignItems: 'center', justifyContent: 'center', width: 195, height: 195 }}>
+              <Animated.View style={planRingStyle(planRing1Op, planRing1Scale, 195)} />
+              <Animated.View style={planRingStyle(planRing2Op, planRing2Scale, 148)} />
+              <Animated.View style={planRingStyle(planRing3Op, planRing3Scale, 100)} />
+              <Animated.View style={{
+                width: 88, height: 88, borderRadius: 44,
+                backgroundColor: PLAN + '28',
+                justifyContent: 'center', alignItems: 'center',
+                opacity: planIconFade,
+                transform: [{ scale: planScale }],
+              }}>
+                <Ionicons name="create" size={50} color={PLAN} />
+              </Animated.View>
+            </View>
+
+            <Animated.View style={{ opacity: planFade, alignItems: 'center', width: '100%' }}>
+              <Text style={{ fontSize: 26, fontWeight: '800', color: c.white, textAlign: 'center', lineHeight: 34 }}>
+                Now, let's customize your{'\n'}meal plan to hit your{'\n'}daily calorie intake
+              </Text>
+            </Animated.View>
+
+            <Animated.View style={{ opacity: planButtonFade, width: '100%' }}>
+              <TouchableOpacity
+                onPress={goNext}
+                style={{
+                  backgroundColor: c.accent, borderRadius: 18,
+                  paddingVertical: 18, alignItems: 'center',
+                }}
+              >
+                <Text style={{ fontSize: 16, fontWeight: '800', color: '#FFF', letterSpacing: 0.4 }}>Continue</Text>
+              </TouchableOpacity>
+            </Animated.View>
+          </View>
+        );
+      }
+
+      // Step 10 — Your daily calorie need
+      case 10: {
         const CIRCLE_R    = 84;
         const STROKE_W    = 11;
         const CIRCLE_SIZE = (CIRCLE_R + STROKE_W) * 2;
@@ -533,8 +634,8 @@ export default function OnboardingScreen({ onComplete, onGoBack, initialStep = 0
         );
       }
 
-      // Step 10 — Value message + Name
-      case 10:
+      // Step 11 — Value message + Name
+      case 11:
         return (
           <KeyboardAvoidingView
             style={{ flex: 1 }}
@@ -1108,7 +1209,7 @@ export default function OnboardingScreen({ onComplete, onGoBack, initialStep = 0
       <StatusBar style={c.statusBar} />
 
       {/* Subtle accent glows — hidden on transition steps */}
-      {step !== 2 && step !== 9 && (
+      {step !== 2 && step !== 9 && step !== 10 && (
         <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
           <Animated.View style={{ position: 'absolute', top: -100, right: -80,  width: 320, height: 320, borderRadius: 160, backgroundColor: c.accent, opacity: 0.07, transform: [{ translateX: glob1X }, { translateY: glob1Y }] }} />
           <Animated.View style={{ position: 'absolute', bottom: 60,  left: -160, width: 400, height: 400, borderRadius: 200, backgroundColor: c.accent, opacity: 0.04, transform: [{ translateX: glob2X }, { translateY: glob2Y }] }} />
@@ -1126,7 +1227,7 @@ export default function OnboardingScreen({ onComplete, onGoBack, initialStep = 0
           : <View style={{ width: 22 }} />
         }
         <View style={{ flex: 1, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 8 }}>
-          {step !== 2 && step !== 9 && Array.from({ length: STEPS }).map((_, i) => {
+          {step !== 2 && step !== 9 && step !== 10 && Array.from({ length: STEPS }).map((_, i) => {
             const pill = (
               <View style={{
                 height: 7,
@@ -1158,7 +1259,7 @@ export default function OnboardingScreen({ onComplete, onGoBack, initialStep = 0
       </Animated.View>
 
       {/* ── Continue / Get Started button — hidden on step 0 (auto-advances) ── */}
-      {(step === 3 || step === 8 || step === 10) && <View style={{ paddingHorizontal: 22, paddingBottom: 24 }}>
+      {(step === 3 || step === 8 || step === 11) && <View style={{ paddingHorizontal: 22, paddingBottom: 24 }}>
         <TouchableOpacity
           onPress={goNext}
           activeOpacity={ready ? 0.85 : 1}
@@ -1180,7 +1281,7 @@ export default function OnboardingScreen({ onComplete, onGoBack, initialStep = 0
             fontSize: 16, fontWeight: '800', letterSpacing: 0.4,
             color: ready ? '#FFFFFF' : c.muted,
           }}>
-            {step === 10 ? 'Get Started' : step === 8 ? 'Create My Plan' : 'Continue'}
+            {step === 11 ? 'Get Started' : step === 8 ? 'Create My Plan' : 'Continue'}
           </Text>
         </TouchableOpacity>
       </View>}
