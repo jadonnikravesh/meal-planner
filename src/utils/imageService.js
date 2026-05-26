@@ -29,9 +29,11 @@ async function fetchFromBackend(query, count = 8) {
   const url = `${API_BASE_URL}/food-image?q=${encodeURIComponent(query)}&count=${count}`;
   console.log(`[imageService] /food-image request: "${query}" (count=${count})`);
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  // 28 s timeout — long enough to survive a Render cold-start (~20-25 s to wake).
+  // 3 attempts total: first may hit the cold-start, second usually gets a live server.
+  for (let attempt = 1; attempt <= 3; attempt++) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 9000);
+    const timer = setTimeout(() => controller.abort(), 28000);
     try {
       const res = await fetch(url, { signal: controller.signal });
       clearTimeout(timer);
@@ -41,27 +43,26 @@ async function fetchFromBackend(query, count = 8) {
       try {
         json = await res.json();
       } catch {
-        console.warn(`[imageService] non-JSON body (HTTP ${res.status}) for "${query}" attempt ${attempt} — backend may not have /food-image route deployed`);
-        if (attempt < 2) { await new Promise((r) => setTimeout(r, 1500)); continue; }
+        console.warn(`[imageService] non-JSON body (HTTP ${res.status}) for "${query}" attempt ${attempt}`);
+        if (attempt < 3) { await new Promise((r) => setTimeout(r, 2000)); continue; }
         return [];
       }
 
       if (!res.ok) {
         console.warn(`[imageService] backend error ${res.status} for "${query}":`, json.error ?? '(no message)');
-        if (attempt < 2 && res.status >= 500) { await new Promise((r) => setTimeout(r, 1500)); continue; }
+        if (attempt < 3 && res.status >= 500) { await new Promise((r) => setTimeout(r, 2000)); continue; }
         return [];
       }
 
       const photos = json.photos || [];
       const firstUri = photos[0]?.uri ?? null;
       console.log(`[imageService] ${photos.length} photos for "${query}" | first: ${firstUri ?? 'none'}`);
-      if (firstUri) console.log(`[imageService] iOS will load: ${firstUri}`);
       return photos;
     } catch (err) {
       clearTimeout(timer);
-      const label = err.name === 'AbortError' ? 'timeout (9s)' : `network error: ${err.message}`;
+      const label = err.name === 'AbortError' ? 'timeout (28s)' : `network error: ${err.message}`;
       console.warn(`[imageService] ${label} for "${query}" attempt ${attempt}`);
-      if (attempt < 2) { await new Promise((r) => setTimeout(r, 1500)); continue; }
+      if (attempt < 3) { await new Promise((r) => setTimeout(r, 2000)); continue; }
       return [];
     }
   }

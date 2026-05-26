@@ -25,16 +25,18 @@ import AIDataUsageScreen        from './src/screens/AIDataUsageScreen';
 import LoginScreen        from './src/screens/LoginScreen';
 import SignUpScreen       from './src/screens/SignUpScreen';
 import OnboardingScreen  from './src/screens/OnboardingScreen';
+import WelcomeScreen     from './src/screens/WelcomeScreen';
 import MealLogOverlay  from './src/components/MealLogOverlay';
 
 import { MealContextProvider }               from './src/context/MealContext';
-import { AppProvider, useApp, useTheme }     from './src/context/AppContext';
+import { AppProvider, useApp, useTheme, useIsPremium } from './src/context/AppContext';
+import { PremiumProvider, usePremium }         from './src/context/PremiumContext';
+import PremiumModal                             from './src/components/PremiumModal';
 import { AuthProvider, useAuth }             from './src/context/AuthContext';
 import { MealOverlayContext }                from './src/context/OverlayContext';
 import { TtsProvider }                        from './src/context/TtsContext';
 import { useNotifications }                  from './src/notifications/NotificationManager';
 import WeightReviewModal                     from './src/components/WeightReviewModal';
-import PaywallScreen                         from './src/screens/PaywallScreen';
 import { TEST_MODE }                         from './src/config/testMode';
 import { estimateWeeklyWeightChange, isWeeklyReviewDue } from './src/utils/weightEstimation';
 import { getTodayKey }                       from './src/utils/nutrition';
@@ -105,6 +107,8 @@ function FloatingTabBar({ state, navigation }) {
   ].join(' ');
 
   const { state: appState, dispatch: appDispatch } = useApp();
+  const { showPremium } = usePremium();
+  const isPremium = useIsPremium();
 
   // ── AI consent (mic button) ─────────────────────────────────────────────────
   const [showMicConsent, setShowMicConsent] = useState(false);
@@ -118,12 +122,23 @@ function FloatingTabBar({ state, navigation }) {
   const handleMicPress = useCallback(() => {
     if (isListening || isTranscribing) { stopListening(); return; }
     if (!appState.aiConsent) { setShowMicConsent(true); return; }
+    // Free tier: 1 voice log per day
+    if (!isPremium) {
+      const today = getTodayKey();
+      const { voiceLogDate, voiceLogCount } = appState.freeTier || {};
+      if (voiceLogDate === today && (voiceLogCount ?? 0) >= 1) {
+        showPremium();
+        return;
+      }
+    }
+    appDispatch({ type: 'LOG_VOICE_USAGE', payload: { date: getTodayKey() } });
     startListening();
-  }, [isListening, isTranscribing, startListening, stopListening, appState.aiConsent]);
+  }, [isListening, isTranscribing, startListening, stopListening, appState.aiConsent, appState.freeTier, isPremium, showPremium, appDispatch]);
 
   const handleMicConsentAccept = useCallback(() => {
     appDispatch({ type: 'SET_AI_CONSENT', payload: true });
     setShowMicConsent(false);
+    appDispatch({ type: 'LOG_VOICE_USAGE', payload: { date: getTodayKey() } });
     startListening();
   }, [appDispatch, startListening]);
 
@@ -176,14 +191,24 @@ function FloatingTabBar({ state, navigation }) {
 
   const TabBtn = ({ tab }) => {
     const focused = currentRoute === tab.name;
+    const isLocked = tab.name === 'Helper' && !isPremium;
     const color   = focused ? c.accent : c.tabInactive;
+    const handleTabPress = () => {
+      if (isLocked) { showPremium(); return; }
+      goTo(tab.name);
+    };
     return (
-      <TouchableOpacity onPress={() => goTo(tab.name)} activeOpacity={0.7} style={s.tabBtn}>
+      <TouchableOpacity onPress={handleTabPress} activeOpacity={0.7} style={s.tabBtn}>
         <View style={{ position: 'relative' }}>
           <Ionicons name={focused ? tab.iconFocused : tab.icon} size={tab.iconSize ?? 22} color={color} style={tab.iconOffset ? { transform: [{ translateY: tab.iconOffset }] } : undefined} />
           {tab.beta && (
             <View style={[s.betaBadge, { backgroundColor: c.accent }]}>
               <Text style={s.betaBadgeText}>beta</Text>
+            </View>
+          )}
+          {isLocked && (
+            <View style={[s.betaBadge, { backgroundColor: c.muted, right: -10 }]}>
+              <Ionicons name="lock-closed" size={7} color="#FFF" />
             </View>
           )}
         </View>
@@ -422,22 +447,43 @@ function AppNavigator() {
 // ─── Auth screens ─────────────────────────────────────────────────────────────
 function AuthScreens() {
   const c = useTheme();
-  const [screen, setScreen] = useState('login');
+  const [screen, setScreen] = useState('welcome');
   return (
     <>
       <StatusBar style={c.statusBar} backgroundColor={c.bg} />
-      {screen === 'login'
-        ? <LoginScreen  onGoToSignUp={() => setScreen('signup')} />
-        : <SignUpScreen onGoToLogin={()  => setScreen('login')}  />
-      }
+      {screen === 'welcome' && (
+        <WelcomeScreen
+          onStart={() => setScreen('onboarding')}
+          onLogin={() => setScreen('login')}
+        />
+      )}
+      {screen === 'onboarding' && (
+        <OnboardingScreen
+          onGoBack={() => setScreen('welcome')}
+          onComplete={() => setScreen('signup')}
+        />
+      )}
+      {screen === 'login' && (
+        <LoginScreen
+          onGoToSignUp={() => setScreen('signup')}
+          onGoToWelcome={() => setScreen('welcome')}
+        />
+      )}
+      {screen === 'signup' && (
+        <SignUpScreen
+          onGoToLogin={() => setScreen('login')}
+          onGoToWelcome={() => setScreen('welcome')}
+        />
+      )}
     </>
   );
 }
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 function RootNavigator() {
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, signOut } = useAuth();
   const { state, dispatch, stateLoaded } = useApp();
+  const { showPremium } = usePremium();
 
   // TEST_MODE: track onboarding completion in session memory for the test account.
   const [testOnboarded, setTestOnboarded] = useState(false);
@@ -457,6 +503,10 @@ function RootNavigator() {
     if (uid === lastUidRef.current) return;
     lastUidRef.current = uid;
 
+    // Reset the onboarding tracker so a newly created account always
+    // gets the post-onboarding modal, even if a previous account was onboarded.
+    initialOnboardedRef.current = null;
+
     if (TEST_MODE && user?.isTestAccount) {
       setTestOnboarded(false);
       dispatch({
@@ -465,6 +515,29 @@ function RootNavigator() {
       });
     }
   }, [user?.uid, dispatch]);
+
+  // Show PremiumModal once after onboarding completes (not on returning user load)
+  const initialOnboardedRef = useRef(null);
+  useEffect(() => {
+    if (!stateLoaded) return;
+    const isTestUser = TEST_MODE && user?.isTestAccount;
+    const nowOnboarded = isTestUser ? testOnboarded : state.isOnboarded;
+
+    if (initialOnboardedRef.current === null) {
+      // First time state is ready for this user — record without triggering
+      initialOnboardedRef.current = nowOnboarded;
+      return;
+    }
+    // Transition false → true means user just finished onboarding this session
+    if (nowOnboarded && !initialOnboardedRef.current) {
+      initialOnboardedRef.current = true;
+      const hasSub = ['trial', 'active'].includes(state.subscription?.status);
+      if (!hasSub) {
+        const t = setTimeout(showPremium, 600);
+        return () => clearTimeout(t);
+      }
+    }
+  }, [stateLoaded, state.isOnboarded, testOnboarded]);
 
   // Fade out once Firebase auth, AsyncStorage, and the scale animation are all done.
   const appReady  = !authLoading && stateLoaded;
@@ -489,12 +562,10 @@ function RootNavigator() {
       return (
         <OnboardingScreen
           onComplete={isTestUser ? () => setTestOnboarded(true) : undefined}
+          onGoBack={signOut}
         />
       );
     }
-
-    const hasSub = ['trial', 'active'].includes(state.subscription?.status);
-    if (!hasSub) return <PaywallScreen />;
 
     return <AppNavigator />;
   }
@@ -522,7 +593,10 @@ export default function App() {
       <AuthProvider>
         <AppProvider>
           <MealContextProvider>
-            <RootNavigator />
+            <PremiumProvider>
+              <RootNavigator />
+              <PremiumModal />
+            </PremiumProvider>
           </MealContextProvider>
         </AppProvider>
       </AuthProvider>

@@ -26,6 +26,8 @@ const _IS_PRODUCTION = _APP_ENV === 'production';
 const _DEV_ALLOWLIST = new Set([
   'jadonnikwork@gmail.com',
   'jadonnikravesh@gmail.com',
+  'test@foodchatai.com',
+  'test@shredai.com',
 ]);
 
 export const DEV_MODE = __DEV__;
@@ -34,10 +36,16 @@ export const TEST_MODE     = true;
 export const TEST_EMAIL    = 'test@shredai.com';
 export const TEST_PASSWORD = 'test1234';
 
+// All emails that grant Apple reviewer / demo access.
+const _REVIEW_EMAILS = new Set([
+  'test@shredai.com',
+  'test@foodchatai.com',
+]);
+
 // Returns true when `user` is the designated Apple review/test account.
 // Safe to call with null/undefined.
 export function isReviewAccount(user) {
-  return !!(user?.isTestAccount || user?.email === TEST_EMAIL);
+  return !!(user?.isTestAccount || _REVIEW_EMAILS.has((user?.email ?? '').toLowerCase()));
 }
 
 // Returns true when developer-only UI should be visible for this user.

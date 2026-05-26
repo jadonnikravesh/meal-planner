@@ -58,6 +58,10 @@ const INITIAL_STATE = {
     customerId:     null,
     trialEnd:       null,
   },
+  freeTier: {
+    voiceLogDate:  null,
+    voiceLogCount: 0,
+  },
   aiConsent: false,
 };
 
@@ -80,6 +84,10 @@ function reducer(state, action) {
         subscription: {
           ...INITIAL_STATE.subscription,
           ...(loaded.subscription || {}),
+        },
+        freeTier: {
+          ...INITIAL_STATE.freeTier,
+          ...(loaded.freeTier || {}),
         },
       };
     }
@@ -270,6 +278,19 @@ function reducer(state, action) {
         subscription: { ...state.subscription, ...action.payload },
       };
 
+    case 'LOG_VOICE_USAGE': {
+      const { date } = action.payload;
+      const current = state.freeTier || INITIAL_STATE.freeTier;
+      const isSameDay = current.voiceLogDate === date;
+      return {
+        ...state,
+        freeTier: {
+          voiceLogDate:  date,
+          voiceLogCount: isSameDay ? (current.voiceLogCount || 0) + 1 : 1,
+        },
+      };
+    }
+
     case 'SET_AI_CONSENT':
       return { ...state, aiConsent: action.payload };
 
@@ -409,6 +430,11 @@ export function useApp() {
   const ctx = useContext(AppContext);
   if (!ctx) throw new Error('useApp must be used inside AppProvider');
   return ctx;
+}
+
+export function useIsPremium() {
+  const { state } = useContext(AppContext);
+  return ['active', 'trial'].includes(state.subscription?.status);
 }
 
 export function useTheme() {

@@ -9,8 +9,9 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useNavigation } from '@react-navigation/native';
-import { useTheme, useApp } from '../context/AppContext';
+import { useTheme, useApp, useIsPremium } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
+import { usePremium } from '../context/PremiumContext';
 import { getAuthHeaders } from '../utils/getAuthHeaders';
 import { usePantryStorage } from '../hooks/usePantryStorage';
 import { getOrFetchFoodImage } from '../utils/imageService';
@@ -656,8 +657,12 @@ export default function PantryScreen() {
   const { user }   = useAuth();
   const navigation = useNavigation();
   const { items, loaded, addItems, removeItem, clearAll, updateItemImage, updateItem, replaceAll } = usePantryStorage();
-  const insets   = useSafeAreaInsets();
-  const darkMode = false; // permanently light — to revert: state.settings?.darkMode !== false
+  const insets      = useSafeAreaInsets();
+  const darkMode    = false; // permanently light — to revert: state.settings?.darkMode !== false
+  const isPremium   = useIsPremium();
+  const { showPremium } = usePremium();
+
+  const FREE_ITEM_LIMIT = 10;
 
   const [scanning,         setScanning]         = useState(false);
   const [uploading,        setUploading]        = useState(false);
@@ -729,11 +734,12 @@ export default function PantryScreen() {
     setPendingScanItems(null);
   }, [doCommitScan, pendingScanItems, user]);
 
-  // ── Open in-app camera from sheet ─────────────────────────────────────────
+  // ── Open in-app camera from sheet (premium only) ──────────────────────────
   const handleTakePhoto = useCallback(() => {
     setAddSheetOpen(false);
+    if (!isPremium) { showPremium(); return; }
     setCameraOpen(true);
-  }, []);
+  }, [isPremium, showPremium]);
 
   // ── Shared: send base64 image to /analyze-pantry, open confirm modal ────────
   const runPantryDetection = useCallback(async (imageBase64, mimeType = 'image/jpeg', label = 'scan') => {
@@ -765,9 +771,10 @@ export default function PantryScreen() {
     }
   }, [user]);
 
-  // ── Pick from library → AI detect → confirm modal ─────────────────────────
+  // ── Pick from library → AI detect → confirm modal (premium only) ──────────
   const handlePickFromLibrary = useCallback(async () => {
     setAddSheetOpen(false);
+    if (!isPremium) { showPremium(); return; }
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') return;
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -778,7 +785,7 @@ export default function PantryScreen() {
     });
     if (result.canceled || !result.assets?.[0]) return;
     await runPantryDetection(result.assets[0].base64, 'image/jpeg', 'library');
-  }, [runPantryDetection]);
+  }, [runPantryDetection, isPremium, showPremium]);
 
   // ── After camera capture: run AI, open confirm modal ──────────────────────
   const handleCameraCapture = useCallback(async ({ base64, mimeType }) => {
@@ -786,9 +793,10 @@ export default function PantryScreen() {
     await runPantryDetection(base64, mimeType, 'camera');
   }, [runPantryDetection]);
 
-  // ── Scan receipt (mock flow) ───────────────────────────────────────────────
+  // ── Scan receipt (mock flow, premium only) ────────────────────────────────
   const handleUploadReceipt = useCallback(async () => {
     setAddSheetOpen(false);
+    if (!isPremium) { showPremium(); return; }
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') return;
 
@@ -809,10 +817,11 @@ export default function PantryScreen() {
     }));
     addItems(baseItems);
     streamImages(baseItems);
-  }, [addItems, streamImages]);
+  }, [addItems, streamImages, isPremium, showPremium]);
 
   // ── Add item manually ──────────────────────────────────────────────────────
   const handleAddManualItem = useCallback((name) => {
+    if (!isPremium && items.length >= FREE_ITEM_LIMIT) { showPremium(); return; }
     const dateAdded = new Date().toISOString();
     const newItem = {
       id: `manual_${Date.now()}`,
@@ -828,7 +837,7 @@ export default function PantryScreen() {
       if (uri) updateItemImage(newItem.id, uri);
     });
     setItemModal({ visible: false, mode: 'add', item: null });
-  }, [addItems, updateItemImage]);
+  }, [addItems, updateItemImage, isPremium, items.length, showPremium]);
 
   // ── Edit item name ─────────────────────────────────────────────────────────
   const handleEditItem = useCallback((id, newName, originalName) => {
@@ -926,9 +935,24 @@ export default function PantryScreen() {
           ))}
         </ScrollView>
 
+        {/* ── Free tier item counter ── */}
+        {!isPremium && (
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+            <Text style={{ fontSize: 12, color: c.muted }}>
+              {items.length}/{FREE_ITEM_LIMIT} free items used
+            </Text>
+            <TouchableOpacity onPress={showPremium} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Text style={{ fontSize: 12, color: c.accent, fontWeight: '700' }}>Upgrade →</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* ── Primary action button ── */}
         <TouchableOpacity
-          onPress={() => setAddSheetOpen(true)}
+          onPress={() => {
+            if (!isPremium && items.length >= FREE_ITEM_LIMIT) { showPremium(); return; }
+            setAddSheetOpen(true);
+          }}
           activeOpacity={0.82}
           style={[ab.btn, { backgroundColor: c.accent, shadowColor: c.accent, marginBottom: 24 }]}
         >
@@ -987,7 +1011,10 @@ export default function PantryScreen() {
               </View>
               <View style={{ flex: 1 }} />
               <TouchableOpacity
-                onPress={() => setItemModal({ visible: true, mode: 'add', item: null })}
+                onPress={() => {
+                  if (!isPremium && items.length >= FREE_ITEM_LIMIT) { showPremium(); return; }
+                  setItemModal({ visible: true, mode: 'add', item: null });
+                }}
                 style={[add.btn, { backgroundColor: c.accentDim, borderColor: c.accent + '44' }]}
                 activeOpacity={0.75}
               >
@@ -1032,7 +1059,10 @@ export default function PantryScreen() {
           <>
             <EmptyState c={c} />
             <TouchableOpacity
-              onPress={() => setItemModal({ visible: true, mode: 'add', item: null })}
+              onPress={() => {
+                if (!isPremium && items.length >= FREE_ITEM_LIMIT) { showPremium(); return; }
+                setItemModal({ visible: true, mode: 'add', item: null });
+              }}
               activeOpacity={0.75}
               style={[add.emptyBtn, { backgroundColor: c.accentDim, borderColor: c.accent + '44' }]}
             >
