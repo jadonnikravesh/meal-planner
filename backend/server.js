@@ -811,6 +811,49 @@ app.get('/food-image', async (req, res) => {
   }
 });
 
+// ─── GET /food-search ────────────────────────────────────────────────────────
+// Proxies USDA FoodData Central search — keeps API key server-side and avoids CORS.
+// Query params: q (search string), pageSize (default 25, max 50)
+app.get('/food-search', async (req, res) => {
+  const q        = (req.query.q || '').trim();
+  const pageSize = Math.min(parseInt(req.query.pageSize, 10) || 25, 50);
+
+  if (!q) return res.status(400).json({ error: 'q is required', foods: [] });
+
+  const usdaKey = (process.env.USDA_API_KEY || 'DEMO_KEY').trim();
+  const url = `https://api.nal.usda.gov/fdc/v1/foods/search` +
+    `?api_key=${usdaKey}` +
+    `&query=${encodeURIComponent(q)}` +
+    `&dataType=SR%20Legacy,Foundation,Survey%20(FNDDS),Branded` +
+    `&pageSize=${pageSize}`;
+
+  console.log(`[food-search] query="${q}" pageSize=${pageSize}`);
+
+  const controller = new AbortController();
+  const timer      = setTimeout(() => controller.abort(), 8000);
+
+  try {
+    const usdaRes = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+
+    if (!usdaRes.ok) {
+      const body = await usdaRes.text().catch(() => '');
+      console.warn(`[food-search] USDA ${usdaRes.status} for "${q}":`, body.slice(0, 200));
+      return res.status(usdaRes.status).json({ error: `USDA ${usdaRes.status}`, foods: [] });
+    }
+
+    const json = await usdaRes.json();
+    const foods = json.foods ?? [];
+    console.log(`[food-search] ${foods.length} results for "${q}"`);
+    res.json({ foods });
+  } catch (err) {
+    clearTimeout(timer);
+    const isTimeout = err.name === 'AbortError';
+    console.error('[food-search]', isTimeout ? 'timeout (8s)' : err.message, 'for', `"${q}"`);
+    res.status(isTimeout ? 504 : 500).json({ error: isTimeout ? 'Search timed out' : err.message, foods: [] });
+  }
+});
+
 // ─── GET /meals ───────────────────────────────────────────────────────────────
 app.get('/meals', requireAuth, (req, res) => res.json({ meals: getUserMeals(req.uid) }));
 
